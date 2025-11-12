@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.env
+.env.*
+.project
+.idea/
+.vscode/
+
+# Logs
+*.log
+log/
+tmp/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+docker-compose.yml
+docker-compose.*.yml
+!docker-compose.yml
+
+# Specific to this project
+app.log
+mcp_server.log
+conversations.json
+cobalt-duality-468620-v7-f6a3f73bd9ba.json

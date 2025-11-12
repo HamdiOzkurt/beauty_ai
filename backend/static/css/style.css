@@ -1,0 +1,300 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #1f2937; /* gray-800 */
+    background: #f5f7fb;
+    min-height: 100vh;
+    margin: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+.background-gradient {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    z-index: -1;
+}
+
+.container {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    padding: 2rem 2rem 1.25rem 2rem;
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+    width: 90%;
+    max-width: 700px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.header {
+    margin-bottom: 1.5rem;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+h1 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: #0f172a; /* gray-900 */
+}
+
+#status-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 18px;
+    font-size: 15px;
+    color: #6b7280; /* gray-500 */
+}
+
+#status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 10px;
+    transition: background-color 0.3s ease;
+}
+
+.disconnected { background-color: #ef4444; } /* red-500 */
+.connected { background-color: #16a34a; } /* green-600 */
+.listening { background-color: #f59e0b; } /* amber-500 */
+
+.button-container { display: none; }
+
+/* Circular talk button slightly closer to logs */
+#talkButton {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); /* blue */
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.35);
+    transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    margin-top: 0.6rem;
+}
+
+#talkButton:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #94a3b8 100%);
+    cursor: not-allowed;
+    opacity: 0.9;
+    box-shadow: none;
+}
+
+#talkButton:not(:disabled):hover { 
+    box-shadow: 0 16px 40px rgba(59, 130, 246, 0.5); 
+}
+
+/* BASILI TUTARKEN KIRMIZI - :active ile anında tepki */
+#talkButton:not(:disabled):active,
+#talkButton.recording {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+    box-shadow: 0 12px 30px rgba(220,38,38,0.45) !important;
+    transform: scale(0.96);
+}
+
+.mic-icon { width: 26px; height: 26px; fill: currentColor; }
+
+/* Better spacing so button doesn't feel far from chat */
+.chat-container { padding-bottom: 0.75rem; }
+
+/* Screen-reader only */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.instruction {
+    color: #7f8c8d;
+    font-size: 14px;
+    margin-top: 10px;
+}
+
+.chat-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.9rem 1rem;
+    background: #f9fafb; /* light */
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    margin: 0.8rem 0;
+    max-height: 420px;
+    min-height: 220px;
+}
+
+.log-entry {
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    margin-bottom: 0.75rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.log-system { color: #6b7280; font-style: italic; background: transparent; }
+
+.log-user { background: #eaf2ff; color: #2563eb; font-weight: 500; }
+
+.log-assistant { background: #e8f6f3; color: #059669; font-weight: 500; }
+
+/* Text Input Container */
+.text-input-container { display:none; }
+
+/* Unified bottom input bar */
+.input-bar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: auto; /* push to bottom within the card */
+    padding-top: 10px;
+    border-top: 1px solid #e5e7eb;
+}
+
+#text-input {
+    flex: 1;
+    padding: 20px 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    font-size: 16px;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.2s ease;
+    background: #ffffff;
+    color: #1f2937;
+}
+
+#text-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+#text-input:disabled {
+    background: #f3f4f6;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+#text-input::placeholder {
+    color: #9ca3af;
+}
+
+#send-text-button {
+    padding: 16px 30px;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+    white-space: nowrap;
+}
+
+/* Larger send button variant */
+.send-large { padding: 16px 30px; }
+
+/* Inline microphone button for the input bar */
+.mic-inline {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.25);
+    transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.mic-inline:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #94a3b8 100%);
+    cursor: not-allowed;
+    opacity: 0.9;
+    box-shadow: none;
+}
+
+.mic-inline:not(:disabled):active,
+.mic-inline.recording {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+    box-shadow: 0 12px 30px rgba(220,38,38,0.35) !important;
+    transform: scale(0.96);
+}
+
+/* Responsive tweaks */
+@media (max-width: 520px) {
+  .container { padding: 1.25rem 1rem 0.9rem 1rem; }
+  #text-input { font-size: 15px; padding: 14px 14px; }
+  #send-text-button.send-large { padding: 14px 20px; font-size: 15px; }
+  .mic-inline { width: 52px; height: 52px; }
+}
+
+#send-text-button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+}
+
+#send-text-button:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+#send-text-button:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #94a3b8 100%);
+    cursor: not-allowed;
+    opacity: 0.6;
+    box-shadow: none;
+}
+
+/* Mikrofon butonu için merkezi konumlandırma */
+.button-wrapper {
+    display: flex;
+    justify-content: center;
+    margin: 16px 0 8px 0;
+}
