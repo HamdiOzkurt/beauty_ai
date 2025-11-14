@@ -104,7 +104,7 @@ def load_audio_custom(file: str, sr: int = 16000):
 import whisper.audio
 whisper.audio.load_audio = load_audio_custom
 
-whisper_model = whisper.load_model("base")
+whisper_model = whisper.load_model("small")
 
 # Konuşma durumunu modül seviyesinde ve dosya tabanlı olarak sakla
 conversations = FileSessionStore('conversations.json')
