@@ -1,7 +1,7 @@
 @echo off
 echo ========================================
 echo MCP Server Baslatiliyor...
-echo ========================================
+echo ========================================s
 cd /d "%~dp0backend"
 call ..\myvenv\Scripts\activate.bat
 python mcp_server.py
