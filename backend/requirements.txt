@@ -4,7 +4,7 @@ websockets
 sqlalchemy
 psycopg2-binary
 python-dotenv
-openai-whisper
+faster-whisper
 google-cloud-texttospeech
 whisper-mic
 fastmcp

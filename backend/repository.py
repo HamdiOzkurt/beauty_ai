@@ -173,6 +173,7 @@ class AppointmentRepository:
 
     def find_available_slots_for_day(self, service_type: str, day: datetime.date, duration_minutes: int, expert_name: Optional[str] = None) -> List[tuple[datetime, str]]:
         """Belirli bir gün, hizmet ve uzman için tüm uygun (saat, uzman) çiftlerini bulur."""
+        import logging
         db = SessionLocal()
         try:
             start_of_day = datetime.combine(day, datetime.min.time()).replace(hour=settings.BUSINESS_HOURS_START)
@@ -183,20 +184,33 @@ class AppointmentRepository:
 
             experts_to_check = [expert_name] if expert_name else [e["full_name"] for e in settings.EXPERTS.values()]
             normalized_service_type = service_type.replace(' ', '_').lower()
+            
+            logging.info(f"🔍 Boş saatler aranıyor: service={service_type} (normalized={normalized_service_type}), gün={day}, uzman={expert_name}")
+            logging.info(f"🔍 Kontrol edilecek uzmanlar: {experts_to_check}")
 
             while potential_slot + timedelta(minutes=duration_minutes) <= end_of_day:
                 for expert in experts_to_check:
                     expert_info = next((e for e_key, e in settings.EXPERTS.items() if e["full_name"] == expert), None)
                     
-                    if not expert_info or normalized_service_type not in expert_info.get("specialties", []):
+                    if not expert_info:
+                        logging.warning(f"⚠️ Uzman bilgisi bulunamadı: {expert}")
+                        continue
+                    
+                    expert_specialties = expert_info.get("specialties", [])
+                    logging.debug(f"👤 {expert} uzmanlıkları: {expert_specialties}")
+                    
+                    if normalized_service_type not in expert_specialties:
+                        logging.debug(f"❌ {expert} bu hizmeti ({normalized_service_type}) vermiyor")
                         continue
 
                     # Check if this expert is available at this specific time slot
                     if self.check_availability(expert, potential_slot, duration_minutes):
                         available_slots.append((potential_slot, expert))
+                        logging.debug(f"✅ Boş saat bulundu: {potential_slot.strftime('%H:%M')} - {expert}")
                 
                 potential_slot += timedelta(minutes=settings.APPOINTMENT_SLOT_MINUTES)
             
+            logging.info(f"📊 Toplam {len(available_slots)} boş saat bulundu")
             return available_slots
         finally:
             db.close()

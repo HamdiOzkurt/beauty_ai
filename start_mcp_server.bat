@@ -3,6 +3,6 @@ echo ========================================
 echo MCP Server Baslatiliyor...
 echo ========================================
 cd /d "%~dp0backend"
-call ..\myvenv\Scripts\activate.bat
+call ..\myenv\Scripts\activate.bat
 python mcp_server.py
 pause

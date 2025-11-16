@@ -33,13 +33,21 @@ class OrchestratorAgent:
         self.conversations = conversations
 
     def _extract_info_with_regex(self, user_message: str) -> Dict:
-        """Regex ile hızlı bilgi çıkarma"""
+        """Gelişmiş regex ile hızlı bilgi çıkarma - Telefon, Tarih, Saat, Hizmet"""
         info = {}
         
         # Telefon
         phone_match = re.search(r'0?5\d{9}', user_message.replace(" ", "").replace("-", ""))
         if phone_match:
             info["phone"] = '0' + phone_match.group()[-10:]
+        
+        # Saat (YENİ) - 14:30, 14.30, 14:30, 2:30 formatları
+        time_match = re.search(r'(\d{1,2})[:.:](\d{2})', user_message)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2))
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                info["time"] = f"{hour:02d}:{minute:02d}"
         
         # Tarih formatı 1: DD.MM.YYYY veya DD/MM/YYYY (örn: 23.11.2025, 23/11/2025)
         date_match_dot = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', user_message)
@@ -51,7 +59,7 @@ class OrchestratorAgent:
                 info["date"] = f"{year}-{month:02d}-{day:02d}"
         
         # Tarih formatı 2: DD ay YYYY (örn: 23 kasım 2025, 23 Kasım 2025)
-        if "date" not in info:  # Eğer dot format bulunamadıysa
+        if "date" not in info:
             date_match = re.search(r'(\d{1,2})\s*(?:kasım|kasim|aralık|aralik|ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|temmuz|ağustos|agustos|eylül|eylul|ekim)\s*(\d{4})', user_message.lower())
             if date_match:
                 months = {"kasım": 11, "kasim": 11, "aralık": 12, "aralik": 12, "ocak": 1, "şubat": 2, "subat": 2,
@@ -64,6 +72,24 @@ class OrchestratorAgent:
                     year = int(date_match.group(2))
                     if month:
                         info["date"] = f"{year}-{month:02d}-{day:02d}"
+        
+        # Hizmet tespiti (YENİ)
+        services = {
+            "saç kesimi": r"saç\s*kesim",
+            "saç boyama": r"saç\s*boyam|boya",
+            "manikür": r"manikür|manükür|maniküre",
+            "pedikür": r"pedikür|pedükür|pediküre",
+            "cilt bakımı": r"cilt\s*bakım",
+            "kaş dizaynı": r"kaş\s*dizayn",
+            "makyaj": r"makyaj",
+            "masaj": r"masaj",
+            "epilasyon": r"epilasyon",
+            "kirpik lifting": r"kirpik\s*lift"
+        }
+        for service_name, pattern in services.items():
+            if re.search(pattern, user_message.lower()):
+                info["service"] = service_name
+                break
         
         return info
     
@@ -79,6 +105,271 @@ class OrchestratorAgent:
             return f"{date}T{time}"
         else:
             return f"{date}T09:00:00"
+    
+    async def _extract_and_plan_unified(self, user_message: str, conv: Dict) -> Dict:
+        """
+        OPTİMİZE EDİLMİŞ: TEK GEMİNİ ÇAĞRISI - Hem bilgi çıkar, hem plan oluştur
+        
+        Returns:
+            {
+                "extracted": {"service": "...", "date": "...", "time": "...", "phone": "..."},
+                "plan": {
+                    "action": "...",
+                    "missing_info": [...],
+                    "ask_user": "...",
+                    "steps": [...]
+                }
+            }
+        """
+        today = datetime.now()
+        
+        # Konuşma geçmişi
+        history = conv.get("history", [])
+        history_text = "\n".join([
+            f"{'Müşteri' if h['role'] == 'user' else 'Asistan'}: {h['content']}" 
+            for h in history[-6:]
+        ])
+        
+        # Mevcut bilgiler
+        all_info = {**conv.get("context", {}), **conv.get("collected", {})}
+        collected = conv.get("collected", {})
+        context = conv.get("context", {})
+        
+        # HİBRİT YAKLAŞIM: Regex ile önce hızlı bilgi çıkar
+        regex_extracted = self._extract_info_with_regex(user_message)
+        logging.info(f"🔍 Regex buldu: {json.dumps(regex_extracted, ensure_ascii=False)}")
+        
+        # Regex'in bulduklarını collected'a ekle
+        for key, value in regex_extracted.items():
+            if value and value not in collected:
+                collected[key] = value
+        
+        prompt = f"""Sen bir güzellik salonu asistanısın. Kullanıcı mesajından bilgi çıkar VE eylem planı oluştur.
+
+BUGÜNÜN TARİHİ: {today.strftime('%d %B %Y')}
+
+⚠️ RANDEVU ALMA AKIŞI (SIRA ÇOK ÖNEMLİ!):
+1. TELEFON NUMARASI → Müşteri kontrolü için (kayıtlı mı?)
+2. MÜŞTERİ KONTROLÜ → Kayıtlıysa ad otomatik, değilse sor
+3. HİZMET SEÇİMİ → Hangi hizmet?
+4. TARİH & SAAT → Ne zaman?
+5. UZMAN SEÇİMİ → Hangi uzman? (MUTLAKA SOR, otomatik atama yapma!)
+6. ÖZET & ONAY → Tüm bilgileri göster, onay al
+7. RANDEVU OLUŞTUR → Database'e kaydet
+
+⚠️ UZMAN SEÇİMİ KURALLARI:
+- Uzman adı YOKSA → Önce list_experts ile listele, kullanıcıya seç
+- "Fark etmez", "Siz seçin" derse → O zaman otomatik ata
+- Kullanıcı uzman sorarsa → Hemen list_experts yap (telefon eksik olsa bile!)
+
+KONUŞMA GEÇMİŞİ:
+{history_text if history_text else "İlk mesaj"}
+
+MEVCUT BİLGİLER: {json.dumps(collected, ensure_ascii=False)}
+CONTEXT (Sistem): {json.dumps(context, ensure_ascii=False)}
+
+REGEX İLE ZATEN BULUNAN BİLGİLER (BUNLARI TEKRAR ARAMA):
+{json.dumps(regex_extracted, ensure_ascii=False)}
+
+SON KULLANICI MESAJI: "{user_message}"
+
+GÖREV: Aşağıdaki JSON formatında çıktı ver. REGEX'in bulduğu bilgileri ATLA, sadece YENİ bilgileri çıkar:
+
+{{
+  "extracted": {{
+    "service": "{regex_extracted.get('service', '...')}",  // Regex buldu, sen atla
+    "date": "{regex_extracted.get('date', '...')}",        // Regex buldu, sen atla
+    "time": "{regex_extracted.get('time', '...')}",        // Regex buldu, sen atla
+    "phone": "{regex_extracted.get('phone', '...')}",      // Regex buldu, sen atla
+    "customer_name": "...",     // SEN BUL (regex bulamaz)
+    "expert_name": "..."        // SEN BUL (regex bulamaz)
+  }},
+  "plan": {{
+    "action": "...",            // check_availability | create_appointment | cancel_appointment | check_customer | chat | inform
+    "missing_info": [...],      // Eksik bilgiler ["service", "date", "time", "phone"]
+    "ask_user": "...",          // Kullanıcıya sorulacak soru (eksik bilgi varsa)
+    "steps": [                  // Agent adımları (eksik bilgi yoksa)
+      {{
+        "agent": "appointment",
+        "operation": "create_appointment",
+        "params": {{"service_type": "...", "date_time": "...", "customer_phone": "..."}}
+      }}
+    ]
+  }}
+}}
+
+KURALLAR:
+1. TELEFON İLK ÖNCE: Telefon yoksa önce onu sor
+2. MÜŞTERİ KONTROL: Telefon gelince check_customer yap
+3. UZMAN MUTLAKA SOR: expert_name yoksa list_experts ile göster
+4. ONAY ALMADAN OLUŞTURMA: Tüm bilgiler tamsa bile önce confirm_appointment
+5. REGEX BİLGİLERİNİ TEKRAR ARAMA!
+6. Eksik bilgi varsa: missing_info doldur, ask_user ile sor
+7. Kullanıcı "evet, tamam, onayla" derse create_appointment
+8. İptal için appointment_code gerekli
+
+ÖRNEKLER:
+
+Örnek 1 - İlk Mesaj (Telefon İste):
+Kullanıcı: "Randevu almak istiyorum"
+Çıktı:
+{{
+  "extracted": {{}},
+  "plan": {{
+    "action": "book_appointment",
+    "missing_info": ["phone"],
+    "ask_user": "Merhaba! Tabii ki size yardımcı olayım. Telefon numaranızı alabilir miyim?",
+    "steps": []
+  }}
+}}
+
+Örnek 2 - Telefon Geldi (Müşteri Kontrol):
+Kullanıcı: "0555 123 45 67"
+Çıktı:
+{{
+  "extracted": {{"phone": "05551234567"}},
+  "plan": {{
+    "action": "check_customer",
+    "missing_info": null,
+    "ask_user": null,
+    "steps": [{{
+      "agent": "customer",
+      "operation": "check_customer",
+      "params": {{"phone": "05551234567"}}
+    }}]
+  }}
+}}
+
+Örnek 3 - Kayıtlı Müşteri, Hizmet Sor:
+Context: {{"is_registered": true, "customer_name": "Ahmet Yılmaz"}}
+Çıktı:
+{{
+  "extracted": {{}},
+  "plan": {{
+    "action": "book_appointment",
+    "missing_info": ["service"],
+    "ask_user": "Hoş geldiniz Ahmet Bey! Hangi hizmetimizden faydalanmak istersiniz?",
+    "steps": []
+  }}
+}}
+
+Örnek 4 - Hizmet Geldi, Uzman Listele:
+Kullanıcı: "Saç kesimi"
+Mevcut: {{"phone": "05551234567", "customer_name": "Ahmet Yılmaz"}}
+Çıktı:
+{{
+  "extracted": {{"service": "saç kesimi"}},
+  "plan": {{
+    "action": "list_experts",
+    "missing_info": null,
+    "ask_user": "Harika! Saç kesimi uzmanlarımızı gösteriyorum. Hangisi ile çalışmak istersiniz?",
+    "steps": [{{
+      "agent": "appointment",
+      "operation": "list_experts",
+      "params": {{}}
+    }}]
+  }}
+}}
+
+Örnek 5 - Uzman Seçildi, Tarih Sor:
+Kullanıcı: "Ayşe Hanım"
+Mevcut: {{"phone": "05551234567", "service": "saç kesimi"}}
+Çıktı:
+{{
+  "extracted": {{"expert_name": "Ayşe Demir"}},
+  "plan": {{
+    "action": "book_appointment",
+    "missing_info": ["date", "time"],
+    "ask_user": "Pekala, Ayşe Hanım ile. Hangi tarih ve saati düşünüyorsunuz?",
+    "steps": []
+  }}
+}}
+
+Örnek 6 - Tüm Bilgiler Tam, ONAY AL:
+Kullanıcı: "Yarın saat 14:00"
+Mevcut: {{"phone": "05551234567", "customer_name": "Ahmet Yılmaz", "service": "saç kesimi", "expert_name": "Ayşe Demir"}}
+Çıktı:
+{{
+  "extracted": {{"date": "2025-11-17", "time": "14:00"}},
+  "plan": {{
+    "action": "confirm_appointment",
+    "missing_info": null,
+    "ask_user": "Mükemmel! Randevu bilgileriniz:\\n\\n👤 Ad: Ahmet Yılmaz\\n💇 Hizmet: Saç Kesimi\\n👩‍💼 Uzman: Ayşe Demir\\n📅 Tarih: 17 Kasım 2025\\n🕐 Saat: 14:00\\n\\nRandevunuzu oluşturayım mı?",
+    "steps": []
+  }}
+}}
+
+Örnek 7 - ONAY VERİLDİ, OLUŞTUR:
+Kullanıcı: "Evet oluştur"
+Mevcut: {{"phone": "05551234567", "customer_name": "Ahmet Yılmaz", "service": "saç kesimi", "expert_name": "Ayşe Demir", "date": "2025-11-17", "time": "14:00"}}
+Çıktı:
+{{
+  "extracted": {{}},
+  "plan": {{
+    "action": "create_appointment",
+    "missing_info": null,
+    "ask_user": null,
+    "steps": [{{
+      "agent": "appointment",
+      "operation": "create_appointment",
+      "params": {{"service_type": "saç kesimi", "date_time": "2025-11-17T14:00:00", "customer_phone": "05551234567", "customer_name": "Ahmet Yılmaz", "expert_name": "Ayşe Demir"}}
+    }}]
+  }}
+}}
+
+Örnek 8 - Uzman Listesi İsteği (Telefon Olmasa Da Göster):
+Kullanıcı: "Saç kesimi için uzmanlarınızı görebilir miyim?"
+Çıktı:
+{{
+  "extracted": {{"service": "saç kesimi"}},
+  "plan": {{
+    "action": "list_experts",
+    "missing_info": null,
+    "ask_user": "Tabii ki! Saç kesimi uzmanlarımızı gösteriyorum.",
+    "steps": [{{
+      "agent": "appointment",
+      "operation": "list_experts",
+      "params": {{}}
+    }}]
+  }}
+}}
+
+ŞİMDİ ÇIKTI VER (sadece JSON):"""
+
+        try:
+            response = self.model.generate_content(prompt)
+            raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+            
+            result = json.loads(raw)
+            
+            # Validation
+            if "extracted" not in result:
+                result["extracted"] = {}
+            if "plan" not in result:
+                result["plan"] = {"action": "chat", "steps": []}
+            
+            # Mevcut bilgilerdeki eksikleri missing_info'dan çıkar
+            if result["plan"].get("missing_info"):
+                filtered = []
+                for item in result["plan"]["missing_info"]:
+                    key = item.lower()
+                    if key == "phone" and (collected.get("phone") or all_info.get("customer_phone")):
+                        continue
+                    if key in collected or key in all_info:
+                        continue
+                    filtered.append(item)
+                result["plan"]["missing_info"] = filtered if filtered else None
+            
+            logging.info(f"🎯 Unified Extract+Plan: extracted={result['extracted']}, action={result['plan'].get('action')}")
+            return result
+            
+        except Exception as e:
+            logging.error(f"Unified call hatası: {e}", exc_info=True)
+            # Fallback - Eski metod çağır
+            return {
+                "extracted": {},
+                "plan": {"action": "chat", "missing_info": None, "steps": []}
+            }
     
     async def _extract_with_gemini(self, user_message: str, conversation: Dict) -> Dict:
         """Gemini ile bilgi çıkarma - Konuşma geçmişinden de bilgi çıkarır"""
@@ -178,8 +469,8 @@ KURALLAR:
                 if collected.get("time"):
                     context["last_appointment_time"] = collected["time"]
 
-    async def process_request(self, session_id: str, user_message: str) -> str:
-        """Ana işlem akışı"""
+    async def process_request(self, session_id: str, user_message: str, websocket=None) -> str:
+        """Ana işlem akışı - OPTİMİZE EDİLMİŞ"""
         logging.info(f"\n{'='*70}\n🎯 YENİ İSTEK: {user_message}\n{'='*70}")
 
         conv = self.conversations[session_id]
@@ -215,34 +506,106 @@ KURALLAR:
                     if "time" not in conv["collected"] and last_appt.get("time"):
                         conv["collected"]["time"] = last_appt["time"]
             
+            # 2. REGEX ile hızlı bilgi çıkar (ÖNCE)
             regex_info = self._extract_info_with_regex(user_message)
-            gemini_info = await self._extract_with_gemini(user_message, conv)
-            
-            new_info = {**gemini_info, **regex_info}
-            
-            for key, value in new_info.items():
+            for key, value in regex_info.items():
                 if value and value != "null":
                     conv["collected"][key] = value
             
-            logging.info(f"📥 Toplanan: {json.dumps(conv['collected'], ensure_ascii=False)}")
-            logging.info(f"💾 Context: {json.dumps(conv['context'], ensure_ascii=False)}")
-            logging.info(f"📝 History uzunluğu: {len(conv.get('history', []))}")
+            logging.info(f"📥 Regex'ten toplanan: {json.dumps(regex_info, ensure_ascii=False)}")
             
-            action_plan = await self._create_plan(user_message, conv)
+            # 3. 🚀 OPTİMİZASYON: TEK GEMİNİ ÇAĞRISI - Extract + Plan
+            unified = await self._extract_and_plan_unified(user_message, conv)
+            
+            # Extracted bilgileri collected'a ekle
+            for key, value in unified.get("extracted", {}).items():
+                if value and value != "null":
+                    conv["collected"][key] = value
+            
+            action_plan = unified.get("plan", {})
+            
+            logging.info(f"📥 Toplanan (total): {json.dumps(conv['collected'], ensure_ascii=False)}")
+            logging.info(f"💾 Context: {json.dumps(conv['context'], ensure_ascii=False)}")
             logging.info(f"📋 Plan: {json.dumps(action_plan, indent=2, ensure_ascii=False)}")
             
+            # Eksik bilgi varsa, kullanıcıya sor
             if action_plan.get("missing_info") and not action_plan.get("steps"):
-                response = action_plan["ask_user"]
+                response = action_plan.get("ask_user", "Devam edebilmemiz için bilgi eksik.")
                 conv["history"].append({"role": "user", "content": user_message})
                 conv["history"].append({"role": "assistant", "content": response})
+                if websocket:
+                    # Streaming mode: Kelime kelime gönder
+                    for char in response:
+                        await websocket.send_text(char)
+                    await websocket.send_text(json.dumps({"type": "stream_end"}))
                 return response
             
+            # ONAY BEKLİYOR (confirm_appointment action)
+            if action_plan.get("action") == "confirm_appointment":
+                # Context'e "waiting_confirmation" işareti koy
+                conv["context"]["waiting_confirmation"] = True
+                response = action_plan.get("ask_user", "Randevunuzu oluşturmamı onaylıyor musunuz?")
+                conv["history"].append({"role": "user", "content": user_message})
+                conv["history"].append({"role": "assistant", "content": response})
+                if websocket:
+                    # Streaming mode: Kelime kelime gönder
+                    for char in response:
+                        await websocket.send_text(char)
+                    await websocket.send_text(json.dumps({"type": "stream_end"}))
+                return response
+            
+            # Genel sohbet
             if action_plan.get("action") == "chat":
-                response = await self._general_chat(user_message, conv)
+                if websocket:
+                    response = await self._generate_response_stream(user_message, {}, {}, conv, websocket)
+                else:
+                    response = await self._general_chat(user_message, conv)
                 conv["history"].append({"role": "user", "content": user_message})
                 conv["history"].append({"role": "assistant", "content": response})
                 return response
             
+            # Uzman listeleme - MCP tool kullan
+            if action_plan.get("action") == "list_experts":
+                logging.info("🔧 list_experts action algılandı, AppointmentAgent üzerinden MCP tool çağrılıyor...")
+                
+                # AppointmentAgent üzerinden MCP tool'u çağır
+                try:
+                    appointment_agent = self.agents["appointment"]
+                    
+                    # Agent'a task gönder
+                    task = {
+                        "task": "list_experts",
+                        "parameters": {}
+                    }
+                    
+                    mcp_result = await appointment_agent.execute(task, conv)
+                    
+                    if mcp_result.get("success"):
+                        experts = mcp_result.get("experts", [])
+                        filtered_by = mcp_result.get("filtered_by")
+                        
+                        # KISALTILMIŞ FORMAT: Sadece uzman adları (hizmet zaten belli)
+                        experts_text = ", ".join([expert['name'] for expert in experts])
+                        
+                        if filtered_by:
+                            response = f"{filtered_by.title()} için uzmanlarımız: {experts_text}. Hangi uzmanı tercih edersiniz?"
+                        else:
+                            response = f"Uzmanlarımız: {experts_text}. Hangi uzmanı tercih edersiniz?"
+                    else:
+                        response = "Üzgünüm, şu anda uzman listesine erişemiyorum. Telefon numaranızı verir misiniz, randevunuzu oluştururken size uygun uzmanı önerebilirim."
+                except Exception as e:
+                    logging.error(f"MCP list_experts hatası: {e}", exc_info=True)
+                    response = "Üzgünüm, uzman listesini gösterirken bir sorun oluştu. Yine de randevunuzu alabilir miyim?"
+                
+                conv["history"].append({"role": "user", "content": user_message})
+                conv["history"].append({"role": "assistant", "content": response})
+                if websocket:
+                    for char in response:
+                        await websocket.send_text(char)
+                    await websocket.send_text(json.dumps({"type": "stream_end"}))
+                return response
+            
+            # Randevu oluşturma fallback (eski koddan)
             if action_plan.get("action") == "create_appointment" and not action_plan.get("steps"):
                 all_collected = {**conv.get("context", {}), **conv.get("collected", {})}
                 if all_collected.get("service") and all_collected.get("date") and all_collected.get("time") and (all_collected.get("phone") or all_collected.get("customer_phone")):
@@ -260,25 +623,27 @@ KURALLAR:
                     }]
                     logging.info("📝 create_appointment için steps otomatik oluşturuldu")
             
+            # Plan'ı çalıştır
             results = await self._execute_plan(action_plan, conv)
             self._update_context(results, conv)
 
-            # YENİ EKLENEN KISIM: Uzman seçimi için kullanıcıya soru sorma
+            # Uzman seçimi kontrolü
             for result in results.values():
                 if isinstance(result, dict) and result.get("action_required") == "ask_user_to_choose_expert":
                     experts = result.get("available_experts", [])
                     if experts:
                         expert_list_str = ", ".join(experts)
-                        # Uzmanların unvanlarını ve kısa bir özelliğini ekleyerek daha bilgilendirici bir soru oluştur
-                        # Not: Bu kısım için config'den uzman detaylarını çekmek gerekebilir.
-                        # Şimdilik sadece isimleri listeliyoruz.
                         response = f"Elbette. Belirttiğiniz saatte {expert_list_str} gibi harika uzmanlarımız müsait. Hangi uzmanımızla devam etmek istersiniz?"
-                        
-                        # Geçmişe ekle ve hemen yanıtı döndür
                         conv["history"].append({"role": "user", "content": user_message})
                         conv["history"].append({"role": "assistant", "content": response})
+                        if websocket:
+                            # Streaming mode: Kelime kelime gönder
+                            for char in response:
+                                await websocket.send_text(char)
+                            await websocket.send_text(json.dumps({"type": "stream_end"}))
                         return response
             
+            # Fallback: Boş sonuç ama yeterli bilgi var
             if not results and action_plan.get("action") in ["book_appointment", "create_appointment"]:
                 all_collected = {**conv.get("context", {}), **conv.get("collected", {})}
                 if all_collected.get("service") and all_collected.get("date") and all_collected.get("time") and (all_collected.get("phone") or all_collected.get("customer_phone")):
@@ -302,8 +667,13 @@ KURALLAR:
                     results = await self._execute_plan(fallback_plan, conv)
                     self._update_context(results, conv)
             
-            response = await self._generate_response(user_message, action_plan, results, conv)
+            # 4. 🚀 OPTİMİZASYON: STREAMING RESPONSE
+            if websocket:
+                response = await self._generate_response_stream(user_message, action_plan, results, conv, websocket)
+            else:
+                response = await self._generate_response(user_message, action_plan, results, conv)
             
+            # History'e ekle
             conv["history"].append({"role": "user", "content": user_message})
             conv["history"].append({"role": "assistant", "content": response})
             
@@ -635,18 +1005,33 @@ KURALLAR:
                     }
         
         # Müsaitlik sorgusu mu?
-        if any(word in user_lower for word in ["müsait", "boş", "saatler", "açık", "uygun"]):
-            if collected.get("service") and collected.get("date"):
+        if any(word in user_lower for word in ["müsait", "boş", "saatler", "açık", "uygun", "ne zaman", "hangi gün"]):
+            # Eğer tarih bilgisi yoksa, önce tarihi sor.
+            if not collected.get("date"):
+                return {
+                    "action": "ask_date",
+                    "missing_info": ["date"],
+                    "ask_user": "Harika, hangi gün için msaitlik durumunu kontrol etmemi istersiniz?",
+                    "steps": []
+                }
+            
+            # Tarih bilgisi varsa, müsaitlik kontrolü yap.
+            if collected.get("service"):
+                check_params = {
+                    "service_type": collected["service"],
+                    "date": collected['date'] # 'date_time' yerine 'date' kullanıyoruz
+                }
+                # Eğer uzman seçildiyse, onu da ekle
+                if collected.get("expert"):
+                    check_params["expert_name"] = collected["expert"]
+                
                 return {
                     "action": "check_availability",
                     "missing_info": None,
                     "steps": [{
                         "agent": "appointment",
                         "operation": "check_availability",
-                        "params": {
-                            "service_type": collected["service"],
-                            "date_time": self._format_date_time(collected['date'], None)
-                        }
+                        "params": check_params
                     }]
                 }
         
@@ -687,6 +1072,69 @@ KURALLAR:
                 results[f"step_{i}_error"] = {"success": False, "error": str(e)}
         
         return results
+
+    async def _generate_response_stream(self, user_message: str, plan: Dict, results: Dict, conv: Dict, websocket) -> str:
+        """
+        OPTİMİZE EDİLMİŞ: STREAMING ile yanıt üret - Kullanıcı anında görmeye başlar
+        """
+        context = conv.get("context", {})
+        all_info = {**context, **conv.get("collected", {})}
+        
+        history = "\n".join([
+            f"{'Müşteri' if h['role'] == 'user' else 'Asistan'}: {h['content']}" 
+            for h in conv["history"][-6:]
+        ])
+        
+        prompt = f"""Sen bir güzellik salonu asistanısın ve bir GERÇEK KİŞİ gibi konuşuyorsun. Sesli asistan olarak görev yapıyorsun.
+
+KONUŞMA GEÇMİŞİ:
+{history}
+
+KULLANICI ŞİMDİ DEDİ Kİ: "{user_message}"
+
+BİLİNEN BİLGİLER:
+- Müşteri: {all_info.get('customer_name', 'Henüz tanışmadık')}
+- Hizmet: {all_info.get('service', 'Belirlenmedi')}
+- Tarih: {all_info.get('date', 'Belirlenmedi')}
+- Saat: {all_info.get('time', 'Belirlenmedi')}
+
+YAPILAN İŞLEMLER VE SONUÇLAR:
+{json.dumps(results, indent=2, ensure_ascii=False)}
+
+GÖREV: Yukarıdaki sonuçları kullanarak DOĞAL, SAMIMI ve AKICI bir yanıt oluştur.
+
+KURALLAR:
+1. İNSAN GİBİ KONUŞ - Robotik değil, samimi ve sıcak
+2. KISA ve ÖZ ol - Maksimum 3-4 cümle
+3. Randevu oluştuysa → Randevu kodunu vurgula
+4. Müsait saatler varsa → Seçenekler sun ama kısa tut
+5. Direkt ve net konuş
+
+ŞİMDİ SEN YANIT VER (sadece yanıt metni):"""
+
+        try:
+            # STREAMING MODE - Chunk chunk gönder
+            response = self.model.generate_content(prompt, stream=True)
+            
+            full_text = ""
+            for chunk in response:
+                if chunk.text:
+                    full_text += chunk.text
+                    # WebSocket'e chunk gönder
+                    await websocket.send_text(chunk.text)
+            
+            # Streaming bitti, stream_end mesajı gönder
+            await websocket.send_text(json.dumps({"type": "stream_end"}))
+            
+            logging.info(f"📤 Streaming tamamlandı, toplam {len(full_text)} karakter")
+            return full_text  # History için tam metin döndür
+            
+        except Exception as e:
+            logging.error(f"Streaming hatası: {e}", exc_info=True)
+            fallback = "Harika! İşleminizi tamamladım. Başka bir konuda yardımcı olabilir miyim?"
+            await websocket.send_text(fallback)
+            await websocket.send_text(json.dumps({"type": "stream_end"}))
+            return fallback
 
     async def _generate_response(self, user_message: str, plan: Dict, results: Dict, conv: Dict) -> str:
         """Kullanıcıya DOĞAL ve SAMIMI yanıt oluştur"""

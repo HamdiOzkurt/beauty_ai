@@ -2,38 +2,115 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Guzellik Merkezi Asistani</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>💆‍♀️ Güzellik Merkezi - Sesli Asistan</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=20251116210">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <h1>Guzellik Merkezi Sesli Asistani</h1>
-
-        <div id="status-container">
-            <div id="status-indicator" class="disconnected"></div>
-            <div id="status-text">Baglanti bekleniyor...</div>
-        </div>
-
-        <div id="logs" class="chat-container"></div>
-
-        <!-- Tek satır alt bar: mikrofon + metin girişi + gönder -->
-        <div class="input-bar">
-            <button id="talkButton" class="mic-inline" disabled>
-                <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">
-                    <path d="M192 352c53 0 96-43 96-96V96a96 96 0 1 0-192 0v160c0 53 43 96 96 96zM64 256a16 16 0 0 0-32 0 160 160 0 0 0 144 159.2V464H112a16 16 0 0 0 0 32h160a16 16 0 0 0 0-32H208v-48.8A160 160 0 0 0 352 256a16 16 0 0 0-32 0 128 128 0 1 1-256 0z"/>
-                </svg>
-                <span class="sr-only">Basili Tut ve Konus</span>
-            </button>
-
-            <input type="text" id="text-input" placeholder="Sorunuzu buraya yazin..." disabled>
-            <button id="send-text-button" class="send-large" disabled>Gonder</button>
+    <!-- Background -->
+    <div class="background">
+        <div class="bg-gradient"></div>
+        <div class="floating-orb orb-1"></div>
+        <div class="floating-orb orb-2"></div>
+        <div class="floating-orb orb-3"></div>
+        <div class="stars">
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
+            <div class="star"></div>
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo-wrapper">
+                <div class="logo-glow"></div>
+                <div class="logo-circle">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                </div>
+            </div>
+            <h1>Güzellik Merkezi</h1>
+            <p class="tagline">Sesli Randevu Asistanı</p>
+        </div>
+
+        <!-- Status Badge -->
+        <div class="status-badge" id="statusBadge">
+            <div class="status-dot disconnected" id="statusDot"></div>
+            <span id="statusText">Bağlanıyor...</span>
+        </div>
+
+        <!-- Chat Messages -->
+        <div class="messages" id="messages">
+            <div class="welcome-message">
+                <svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <h3>Hoş Geldiniz!</h3>
+                <p>Randevu almak için mikrofon butonuna<br>tıklayın ve konuşmaya başlayın</p>
+            </div>
+        </div>
+
+        <!-- Voice Button -->
+        <div class="voice-section">
+            <div class="voice-button-wrapper">
+                <button class="voice-button" id="voiceButton" disabled>
+                    <!-- Original Microphone Icon (To be commented out)
+                    <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"/>
+                    </svg>
+                    -->
+
+                    <!-- Recent filled icon (Restored) -->
+                    <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C10.34 2 9 3.34 9 5v6c0 1.66 1.34 3 3 3s3-1.34 3-3V5c0-1.66-1.34-3-3-3z"/>
+                        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                    </svg>
+                    
+
+                    <!-- Clean outline icon (backup) - uncomment to use
+                    <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="9" y="2" width="6" height="11" rx="3" ry="3"></rect>
+                        <line x1="12" y1="13" x2="12" y2="20"></line>
+                        <line x1="8" y1="20" x2="16" y2="20"></line>
+                    </svg>
+                    -->
+                    <div class="button-rings">
+                        <div class="ring"></div>
+                        <div class="ring"></div>
+                        <div class="ring"></div>
+                    </div>
+                    <!-- Glow effect -->
+                    <div class="mic-glow"></div>
+                </button>
+            </div>
+            <p class="instruction">Tıklayın ve konuşmaya başlayın</p>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>Güvenli & Gizli</p>
+        </div>
+    </div>
+
+    <script src="/static/js/main.js?v=20251116210"></script>
 </body>
+</html>

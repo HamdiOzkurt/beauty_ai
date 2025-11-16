@@ -19,7 +19,11 @@ engine = create_engine(
     pool_pre_ping=True,  # Bağlantı kontrolü
     pool_size=10,        # Connection pool
     max_overflow=20,     # Max ekstra bağlantı
-    echo=settings.DEBUG
+    echo=settings.DEBUG,
+    connect_args={
+        "connect_timeout": 3,  # 3 saniye timeout
+        "options": "-c statement_timeout=5000"  # 5 saniye query timeout
+    }
 )
 
 # Session factory

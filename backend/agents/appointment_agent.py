@@ -45,7 +45,10 @@ class AppointmentAgent(BaseAgent):
             return await self.call_mcp_tool("list_services", params)
         elif task_type == "list_experts":
             logging.info(f"[{self.name}] Uzman listesi için MCP aracı çağrılıyor.")
-            return await self.call_mcp_tool("list_experts", params)
+            # Eğer params veya conversation'da service_type varsa, filtreleme için geç
+            service_type = params.get("service_type") or conversation.get("collected", {}).get("service")
+            mcp_params = {"service_type": service_type} if service_type else {}
+            return await self.call_mcp_tool("list_experts", mcp_params)
         
         return {"success": False, "error": f"Bilinmeyen görev tipi: {task_type}"}
     
@@ -113,9 +116,26 @@ class AppointmentAgent(BaseAgent):
     async def _check_availability(self, params: Dict, conversation: Dict) -> Dict:
         """
         Müsaitlik kontrolü - MCP aracını çağırır.
+        Sadece `check_availability` aracının beklediği parametreleri gönderir.
         """
         logging.info(f"[{self.name}] Müsaitlik kontrolü için MCP aracı çağrılıyor.")
-        return await self.call_mcp_tool("check_availability", params)
+        
+        # 'date_time' yerine 'date' parametresini de kabul et
+        date_param = params.get('date')
+        datetime_param = params.get('date_time')
+
+        if not date_param and not datetime_param:
+             logging.warning(f"[{self.name}] Müsaitlik kontrolü için 'date' veya 'date_time' parametresi gerekli.")
+             # Belki burada bir hata döndürmek daha iyi olabilir.
+             # return {"success": False, "error": "Tarih parametresi eksik."}
+
+        # Sadece izin verilen parametreleri filtrele
+        allowed_params = ["service_type", "date_time", "date", "expert_name"]
+        filtered_params = {k: v for k, v in params.items() if k in allowed_params}
+
+        logging.info(f"[{self.name}] Filtrelenmiş parametreler: {filtered_params}")
+        
+        return await self.call_mcp_tool("check_availability", filtered_params)
     
     async def _suggest_alternatives(self, params: Dict, conversation: Dict) -> Dict:
         """

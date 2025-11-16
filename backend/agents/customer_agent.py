@@ -39,15 +39,35 @@ class CustomerAgent(BaseAgent):
         return {"success": False, "error": "Bilinmeyen görev tipi"}
     
     async def _check_customer(self, params: Dict, conversation: Dict) -> Dict:
-        """MCP'den müşteri bilgilerini getir."""
+        """MCP'den müşteri bilgilerini getir - TIMEOUT korumalı."""
         
         # Telefon numarasını parametrelerden veya konuşma hafızasından al
         phone = params.get("phone") or conversation.get("user_info", {}).get("phone")
         if not phone:
             return {"success": False, "error": "Müşteri kontrolü için telefon numarası gerekli."}
         
-        mcp_params = {"phone": phone}
-        mcp_result = await self.call_mcp_tool("check_customer", mcp_params)
+        try:
+            mcp_params = {"phone": phone}
+            
+            # TIMEOUT: 5 saniye içinde cevap gelmezse iptal et
+            import asyncio
+            mcp_result = await asyncio.wait_for(
+                self.call_mcp_tool("check_customer", mcp_params),
+                timeout=5.0
+            )
+            
+            return mcp_result
+            
+        except asyncio.TimeoutError:
+            logging.error(f"[{self.name}] Database timeout - müşteri sorgusu 5 saniyede tamamlanamadı")
+            return {
+                "success": False, 
+                "error": "Sistemde geçici bir yavaşlık var, devam edebiliriz.",
+                "timeout": True
+            }
+        except Exception as e:
+            logging.error(f"[{self.name}] Müşteri kontrolü hatası: {e}")
+            return {"success": False, "error": str(e)}
         
         if mcp_result.get("success"):
             customer_name = mcp_result.get("customer", {}).get("name", "Bilinmiyor")
@@ -68,8 +88,9 @@ class CustomerAgent(BaseAgent):
             logging.error(f"[{self.name}] {error_msg} | Gelen Parametreler: {params} | Hafıza: {conversation.get('user_info')}")
             return {"success": False, "error": error_msg}
 
-        # İsim formatlaması
-        formatted_name = full_name.strip().title()
+        # İsim formatlaması - Boşluklara dikkat!
+        # .title() her kelimenin ilk harfini büyük yapar ama boşlukları korur
+        formatted_name = " ".join(word.strip().capitalize() for word in full_name.split() if word.strip())
         
         # MCP aracını çağırmak için son parametreleri oluştur
         mcp_params = {

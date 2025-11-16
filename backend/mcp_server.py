@@ -395,22 +395,39 @@ def list_services() -> Dict:
 
 mcp.tool(list_services)
 
-def list_experts() -> Dict:
+def list_experts(service_type: Optional[str] = None) -> Dict:
     """
-    Merkezde çalışan tüm uzmanların listesini ve uzmanlık alanlarını döndürür.
+    Merkezde çalışan uzmanların listesini ve uzmanlık alanlarını döndürür.
+    Eğer service_type belirtilirse, sadece o hizmeti verebilen uzmanları filtreler.
+    
+    Args:
+        service_type: (Opsiyonel) Filtrelemek için hizmet türü ("saç kesimi", "maniqür" vb.)
     """
     experts_info = []
+    
+    # Hizmet türünü normalize et (filtreleme için)
+    normalized_service = service_type.replace(' ', '_').lower() if service_type else None
+    
     for key, data in settings.EXPERTS.items():
         name = data.get("full_name", key)
         specialties = data.get("specialties") or data.get("services") or []
+        
+        # Eğer hizmet filtresi varsa ve uzman o hizmeti vermiyorsa atla
+        if normalized_service and normalized_service not in specialties:
+            continue
+        
         formatted = [s.replace('_', ' ').title() for s in specialties]
         experts_info.append({"name": name, "specialties": formatted})
+    
     if not experts_info:
+        if normalized_service:
+            return {"success": False, "error": f"'{service_type}' hizmeti için uygun uzman bulunamadı."}
         return {"success": False, "error": "Uzman listesi yapılandırması bulunamadı."}
         
     return {
         "success": True,
-        "experts": experts_info
+        "experts": experts_info,
+        "filtered_by": service_type if service_type else None
     }
 
 mcp.tool(list_experts)

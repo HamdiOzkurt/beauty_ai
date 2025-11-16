@@ -1,5 +1,5 @@
 import logging
-import whisper
+from faster_whisper import WhisperModel
 import io
 import numpy as np
 import json
@@ -7,9 +7,6 @@ import os
 import threading
 import copy
 import tempfile
-import imageio_ffmpeg
-import subprocess
-from whisper.audio import N_SAMPLES
 
 from agents.orchestrator_agent import OrchestratorAgent
 from config import settings
@@ -70,41 +67,46 @@ class FileSessionStore:
 
 
 # Modelleri ve istemcileri bir kere yükle
-logging.info("Whisper modeli yükleniyor...")
+logging.info("Faster-Whisper modeli hazırlanıyor...")
 
-# FFmpeg yolunu ayarla (imageio-ffmpeg kullanarak)
-ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-logging.info(f"FFmpeg bulundu: {ffmpeg_exe}")
+# Faster-Whisper Model - MANUEL YÜKLEME (check_whisper_model.bat ile önce yükle!)
+# Model zaten yüklü olmalı, burada sadece referans alıyoruz
+whisper_model = None
 
-# Whisper için özel load_audio fonksiyonu
-def load_audio_custom(file: str, sr: int = 16000):
-    """
-    FFmpeg kullanarak ses dosyasını yükler ve numpy array'e çevirir.
-    imageio-ffmpeg'den gelen ffmpeg binary'sini kullanır.
-    """
-    cmd = [
-        ffmpeg_exe,  # Sabit kodlanmış "ffmpeg" yerine tam yol kullan
-        "-nostdin",
-        "-threads", "0",
-        "-i", file,
-        "-f", "s16le",
-        "-ac", "1",
-        "-acodec", "pcm_s16le",
-        "-ar", str(sr),
-        "-"
-    ]
-    try:
-        out = subprocess.run(cmd, capture_output=True, check=True).stdout
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
-    
-    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
-
-# Whisper'ın load_audio fonksiyonunu override et
-import whisper.audio
-whisper.audio.load_audio = load_audio_custom
-
-whisper_model = whisper.load_model("small")
+def get_whisper_model():
+    """Model cache'den yüklenir (manuel olarak önceden indirilmiş olmalı)"""
+    global whisper_model
+    if whisper_model is None:
+        logging.info("🎤 Whisper modeli cache'den yükleniyor...")
+        try:
+            # Small model - CPU'da 3-4x daha hızlı, yeterli doğruluk
+            whisper_model = WhisperModel(
+                "small",  # medium → small (hız optimizasyonu)
+                device="cpu",
+                compute_type="int8",
+                download_root=None,
+                local_files_only=True
+            )
+            logging.info("✅ Faster-Whisper Small modeli yüklendi (INT8 - HIZ OPTİMİZE)")
+        except Exception as e:
+            logging.error(f"❌ Small model yüklenemedi, tiny deneniyor: {e}")
+            try:
+                # Fallback: tiny model (en hızlı)
+                whisper_model = WhisperModel(
+                    "tiny",
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=None,
+                    local_files_only=True
+                )
+                logging.info("✅ Faster-Whisper Tiny modeli yüklendi (Fallback - ÇOK HIZLI)")
+            except Exception as e2:
+                logging.error(f"❌ Model yüklenemedi! download_whisper_medium.bat çalıştırın: {e2}")
+                raise RuntimeError(
+                    "Whisper modeli bulunamadı! "
+                    "Lütfen 'download_whisper_medium.bat' ile modeli indirin."
+                )
+    return whisper_model
 
 # Konuşma durumunu modül seviyesinde ve dosya tabanlı olarak sakla
 conversations = FileSessionStore('conversations.json')
@@ -113,37 +115,87 @@ conversations = FileSessionStore('conversations.json')
 logging.info("Orchestrator Agent başlatılıyor...")
 orchestrator_agent = OrchestratorAgent(conversations)
 
-async def process_audio_input(session_id: str, audio_data: bytes) -> str:
+async def process_audio_input(session_id: str, audio_data: bytes, websocket=None) -> str:
     """Gelen ses verisini işler, metne çevirir ve yanıt üretir."""
     try:
-        # Sesi Metne Çevir (Whisper)
-        # Geçici dosya oluştur ve ses verisini yaz
+        # Kullanıcıya ses alındığını göster
+        if websocket:
+            await websocket.send_text(json.dumps({
+                "type": "audio_received",
+                "message": "Ses işleniyor..."
+            }))
+        
+        # Sesi Metne Çevir (Whisper Medium)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as temp_audio:
             temp_audio.write(audio_data)
             temp_audio_path = temp_audio.name
         
         try:
-            # Whisper direkt dosyadan okusun (her formatı destekler)
-            # Türkçe dil desteği eklendi
-            result = whisper_model.transcribe(temp_audio_path, language="tr")
-            user_text = result["text"]
+            # Faster-Whisper Medium model
+            model = get_whisper_model()
+            
+            # GÜÇLENDİRİLMİŞ Context Prompt - Model'e domain bilgisi ver
+            context_prompt = """Güzellik salonu randevu sistemi.
+Hizmetler: saç kesimi, saç boyama, manikür, pedikür, cilt bakımı, kaş dizaynı, makyaj, masaj, epilasyon, kirpik lifting.
+Uzmanlar: Ayşe Demir, Zeynep Kaya, Elif Şahin, Ceyda Yılmaz, Fatma Can, Deniz Aksoy.
+Örnek müşteriler: Ahmet Hamdi Özkurt, Ayşe Yılmaz, Mehmet Kaya.
+Telefon formatı: 0555 123 45 67"""
+            
+            segments, info = model.transcribe(
+                temp_audio_path,
+                language="tr",
+                beam_size=5,  # 10 → 5 (hız optimizasyonu, yeterli doğruluk)
+                temperature=0.0,  # Deterministik (tutarlı)
+                vad_filter=True,
+                initial_prompt=context_prompt  # Domain bilgisi
+            )
+            
+            # Segments'i birleştir
+            user_text = " ".join([segment.text for segment in segments]).strip()
+            
+            logging.info(f"🎤 Algılanan dil: {info.language} (olasılık: {info.language_probability:.2%})")
+            
+            # Boş veya çok kısa transcript'leri reddet
+            if not user_text or len(user_text) < 3:
+                logging.warning(f"⚠️ Boş veya çok kısa ses kaydı, işlem yapılmıyor: '{user_text}'")
+                return ""  # Boş yanıt döndür, işlem yapma
+            
             logging.info(f"Kullanıcı dedi ki (sesten) ({session_id}): {user_text}")
+            
         finally:
             # Geçici dosyayı sil
             if os.path.exists(temp_audio_path):
                 os.unlink(temp_audio_path)
 
-        return await process_text_input(session_id, user_text)
+        # WebSocket'e transkripti gönder
+        if websocket:
+            await websocket.send_text(json.dumps({
+                "type": "transcript",
+                "text": user_text
+            }))
+            
+            # KÜÇÜK GECİKME: Kullanıcı mesajının frontend'de render olması için bekle
+            import asyncio
+            await asyncio.sleep(0.3)  # 300ms - kullanıcı balonu göründükten sonra AI yanıtı gelsin
+        
+        return await process_text_input(session_id, user_text, websocket)
 
     except Exception as e:
         logging.error(f"Ses işlenirken hata oluştu: {e}", exc_info=True)
         return "Üzgünüm, sesinizi işlerken bir sorun oluştu."
 
-async def process_text_input(session_id: str, text_data: str) -> str:
-    """Gelen metin verisini işler ve yanıt üretir."""
+async def process_text_input(session_id: str, text_data: str, websocket=None) -> str:
+    """Gelen metin verisini işler ve yanıt üretir - OPTİMİZE EDİLMİŞ"""
     try:
+        # Boş veya çok kısa metinleri reddet
+        text_data = text_data.strip()
+        if not text_data or len(text_data) < 2:
+            logging.warning(f"⚠️ Boş veya çok kısa metin, işlem yapılmıyor: '{text_data}'")
+            return ""  # Boş yanıt döndür
+        
         logging.info(f"Kullanıcı dedi ki (metin) ({session_id}): {text_data}")
-        response = await orchestrator_agent.process_request(session_id, text_data)
+        # WebSocket parametresini orchestrator'a geçir (streaming için)
+        response = await orchestrator_agent.process_request(session_id, text_data, websocket)
         logging.info(f"Asistan yanıtı ({session_id}): {response}")
         return response
     except Exception as e:

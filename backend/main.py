@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import uuid
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import logging
@@ -28,8 +28,9 @@ logging.basicConfig(
     ]
 )
 
-from .orchestrator import process_audio_input, process_text_input
-from .config import BASE_DIR # BASE_DIR'ı import et
+from orchestrator import process_audio_input, process_text_input
+from config import BASE_DIR # BASE_DIR'ı import et
+from tts_service import get_tts_service
 
 # FastAPI uygulamasını oluştur
 app = FastAPI()
@@ -37,21 +38,21 @@ app = FastAPI()
 # Statik dosyaları (css, js) sunmak için
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
-# HTML template'ini oku
-with open(BASE_DIR / "templates/index.html") as f:
+# HTML template'ini oku (UTF-8 encoding ile)
+with open(BASE_DIR / "templates/index.html", encoding="utf-8") as f:
     html_content = f.read()
 logging.info(f"index.html içeriği yüklendi. Boyut: {len(html_content)} karakter.")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_root():
     """Ana arayüz sayfasını sunar."""
-    logging.info("Kök dizin isteği alındı, index.html döndürülüyor.")
+    logging.info("Kök dizin isteği alındı, index_new.html döndürülüyor.")
     return HTMLResponse(content=html_content)
 
 
 @app.websocket("/api/ws/v1/chat")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket iletişimini yönetir."""
+    """WebSocket iletişimini yönetir - OPTİMİZE EDİLMİŞ (Streaming destekli)"""
     await websocket.accept()
     session_id = str(uuid.uuid4())
     logging.info(f"Yeni WebSocket bağlantısı kabul edildi: {session_id}")
@@ -65,12 +66,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Disconnect sonrası receive çağrısı hatası
                 logging.info(f"WebSocket bağlantısı kapandı (disconnect sonrası receive): {session_id}")
                 break
-            response_text = ""
 
             if "bytes" in message:
                 # Ses verisi geldi
                 audio_data = message["bytes"]
-                response_text = await process_audio_input(session_id, audio_data)
+                # WebSocket'i geç (streaming için)
+                await process_audio_input(session_id, audio_data, websocket)
+                # process_audio_input içinde zaten websocket.send_text yapılıyor (streaming)
             
             elif "text" in message:
                 # Metin verisi geldi (JSON formatında)
@@ -78,7 +80,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     data = json.loads(message["text"])
                     if data.get("type") == "text":
                         text_data = data.get("data", "")
-                        response_text = await process_text_input(session_id, text_data)
+                        # WebSocket'i geç (streaming için)
+                        await process_text_input(session_id, text_data, websocket)
+                        # process_text_input içinde zaten websocket.send_text yapılıyor (streaming)
                     else:
                         logging.warning(f"Bilinmeyen metin mesajı türü: {data}")
                 except json.JSONDecodeError:
@@ -86,10 +90,6 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message.get("type") == "websocket.disconnect":
                 logging.info(f"WebSocket disconnect alındı: {session_id}")
                 break
-
-            # Metin yanıtını istemciye geri gönder
-            if response_text:
-                await websocket.send_text(response_text)
 
     except WebSocketDisconnect:
         logging.info(f"WebSocket bağlantısı kapandı: {session_id}")
@@ -101,6 +101,36 @@ async def websocket_endpoint(websocket: WebSocket):
         except:
             pass  # Zaten kapalıysa hata verme
 
+
+# TTS API Endpoint
+@app.post("/api/tts")
+async def text_to_speech(text: str):
+    """
+    Metni Google TTS ile sese çevir
+    
+    Query params:
+        text: Konuşulacak metin
+        
+    Returns:
+        MP3 audio
+    """
+    try:
+        tts = get_tts_service()
+        audio_content = tts.text_to_speech(text)
+        
+        return Response(
+            content=audio_content,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "inline; filename=speech.mp3"
+            }
+        )
+    except Exception as e:
+        logging.error(f"TTS API hatası: {e}")
+        return Response(
+            content=str(e),
+            status_code=500
+        )
 
 if __name__ == "__main__":
     import uvicorn
