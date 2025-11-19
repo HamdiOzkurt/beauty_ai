@@ -1,0 +1,114 @@
+ Mcp toollar async çalışacak 
+sesi algılama ses enerjisine göre çalışacak 0.20 üzerindeki sesler çalışacak
+real time sesli cevap verecek
+prompt kısaltıcaz
+
+ 
+ 🎯 Mevcut Mimari Analizi
+
+  Ana Akış:
+  Kullanıcı Ses → Whisper STT (2-3s) → Gemini Extract+Plan (3-4s) →
+  MCP Tools (1-2s) → Gemini Response (2-3s) → Browser TTS (0s)
+
+  Toplam: ~10 saniye
+
+  ---
+  🔴 Tespit Edilen Kritik Darboğazlar
+
+  1. Gemini API Çağrıları (5-7 saniye - %60-70)
+
+  orchestrator_agent.py:109-372
+  - _extract_and_plan_unified(): 337 satırlık dev prompt
+  - 8 örnek scenario içeriyor
+  - Her request'te 1500+ token işleniyor
+
+  orchestrator_agent.py:1076-1137
+  - _generate_response_stream(): Yanıt üretimi
+  - History + results + prompt = 500+ token
+
+  2. Faster-Whisper STT (2-3 saniye - %20-30)
+
+  orchestrator.py:144-151
+  beam_size=5  # ← Burası yavaşlatıyor
+  model="small"  # ← "tiny" ile 2x hızlanabilir
+
+  3. MCP Tool Çağrıları (1-2 saniye - %10-15)
+
+  base_agent.py:26-69
+  - Her çağrıda yeni Client() instance
+  - HTTP overhead
+  - Database timeout: 5 saniye (customer_agent.py:56)
+
+  4. Database İşlemleri (0.5-1 saniye - %5-10)
+
+  repository.py:24, 50, 74
+  - Her query için SessionLocal() açılıyor
+  - Connection pool var ama her seferinde close ediliyor
+  - find_available_slots_for_day: O(n*m) - 216 satır loop
+
+  ---
+  ⚡ OPTİMİZASYON STRATEJİSİ (10s → 2s)
+
+  🥇 Tier 1: Kritik Optimizasyonlar (%60 iyileştirme → 4s)
+
+  1.1 Gemini Prompt Kısaltma (-2s)
+
+  # ŞİMDİ: 337 satır, 8 örnek
+  # HEDEF: 100 satır, 2 örnek
+  # KAZANÇ: %40-50 hız artışı
+
+  1.2 Parallel Processing (-2s)
+
+  # Gemini + MCP paralel çalıştır
+  async with asyncio.TaskGroup():
+      task1 = gemini_extract()
+      task2 = mcp_check_customer()
+
+  1.3 Redis Caching (-1s)
+
+  # Sık kullanılan sorguları cache'le
+  - customer bilgileri (5 dk TTL)
+  - available_slots (1 dk TTL)
+
+  🥈 Tier 2: Önemli İyileştirmeler (%20 iyileştirme → 3s)
+
+  2.1 Whisper Model Downgrade (-0.5s)
+
+  model="tiny"  # small → tiny
+  beam_size=3   # 5 → 3
+
+  2.2 Regex-First Yaklaşımı (-0.5s)
+
+  # Daha fazla bilgiyi regex ile çıkar
+  # Gemini'ye daha az iş bırak
+
+  🥉 Tier 3: İnce Ayarlar (%20 iyileştirme → 2s)
+
+  3.1 MCP Connection Pool (-0.3s)
+
+  3.2 Database Session Reuse (-0.2s)
+
+  3.3 Lazy Agent Loading (-0.5s)
+
+  ---
+  💬 SORU: Hangi optimizasyonları uygulamak istersiniz?
+
+  Seçenekler:
+
+  A) TÜM OPTİMİZASYONLAR (10s → 2s hedef - en agresif)
+  - Tüm Tier 1 + 2 + 3
+  - Riskli ama maksimum hız
+
+  B) GÜVENLİ + HIZLI (10s → 3-4s - önerilen)
+  - Tier 1 + Tier 2.1
+  - Az riskli, yüksek kazanç
+
+  C) SADECE GEMİNİ OPTİMİZASYONU (10s → 6s)
+  - Sadece prompt kısaltma
+  - En güvenli, orta kazanç
+
+  D) ÖZEL PAKET (siz söyleyin)
+
+
+
+
