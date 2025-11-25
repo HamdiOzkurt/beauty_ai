@@ -13,11 +13,14 @@ try:
     from tts_profiles import ACTIVE_PROFILE
 except ImportError:
     # Fallback: Profil yoksa varsayılan kullan
+    # Daha yumuşak ve sıcak bir kadın sesi için varsayılan profil
+    # Not: Wavenet yerine genellikle daha doğal bulunan "Neural2" / "Studio" tarzı
+    # sesler tercih edilir; projede tanımlı değilse bu fallback kullanılır.
     ACTIVE_PROFILE = {
-        "name": "tr-TR-Wavenet-A",
-        "speaking_rate": 0.98,
-        "pitch": 0.0,
-        "description": "Genç, doğal kadın sesi"
+        "name": "tr-TR-Wavenet-C",   # Genelde A'dan biraz daha yumuşak ton
+        "speaking_rate": 0.9,        # Biraz daha yavaş, daha anlaşılır
+        "pitch": 2.0,                # Hafif yüksek ton → daha sıcak/human
+        "description": "Yumuşak, sıcak ve doğal kadın sesi"
     }
 
 class TTSService:
@@ -35,13 +38,15 @@ class TTSService:
                 ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
             )
             
-            # Ses ayarları - Profil bazlı (HIZ OPTİMİZE)
+            # Ses ayarları - Profil bazlı (HIZ + DOĞALLIK DENGESİ)
             self.audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
                 speaking_rate=ACTIVE_PROFILE["speaking_rate"],
                 pitch=ACTIVE_PROFILE["pitch"],
-                effects_profile_id=["small-bluetooth-speaker-class-device"],  # Daha hızlı işlem
-                sample_rate_hertz=16000  # 24000 → 16000 (daha hızlı oluşturma, yeterli kalite)
+                # Hafif oda efekti, kulaklık/telefon için daha doğal his
+                effects_profile_id=["headphone-class-device"],
+                # Biraz daha yüksek sample rate daha net ve doğal hissettirir
+                sample_rate_hertz=22050
             )
             
             logging.info(f"✅ Google TTS - {ACTIVE_PROFILE['name']}: {ACTIVE_PROFILE['description']}")

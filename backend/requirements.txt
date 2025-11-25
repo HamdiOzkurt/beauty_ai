@@ -4,7 +4,7 @@ websockets
 sqlalchemy
 psycopg2-binary
 python-dotenv
-faster-whisper
+faster-whisper>=0.10.0
 google-cloud-texttospeech
 whisper-mic
 fastmcp
@@ -14,7 +14,11 @@ httpx
 aiohttp
 python-multipart
 pydub
-numpy
+numpy>=1.24.0
 requests
 starlette
 imageio-ffmpeg
+ctranslate2>=3.24.0
+soundfile>=0.12.0
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.13

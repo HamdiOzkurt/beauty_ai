@@ -8,12 +8,12 @@ from pydantic import BaseModel, Field
 import logging
 
 # Logging konfigürasyonu
+# Sadece konsola yaz - dosya loglarını kapat
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('mcp_server.log', encoding='utf-8')
+        logging.StreamHandler()
     ]
 )
 

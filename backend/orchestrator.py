@@ -1,15 +1,56 @@
+"""
+Orchestrator - Ana İş Akışı Yöneticisi
+GPU STT ile entegre
+"""
+
+import os
+# ⚠️ KRİTİK: cuDNN bypass ve GPU ayarları - TÜM import'lardan ÖNCE!
+os.environ['CUDA_MODULE_LOADING'] = 'LAZY'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# PyTorch'un cuDNN kütüphanelerini PATH'e ekle
+import torch
+torch_lib_path = os.path.join(os.path.dirname(torch.__file__), 'lib')
+
+# Windows PATH'e ekle (CTranslate2 için)
+if torch_lib_path not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = torch_lib_path + os.pathsep + os.environ.get('PATH', '')
+    
+# Ek olarak DLL directory'ye de ekle
+try:
+    os.add_dll_directory(torch_lib_path)
+except (OSError, AttributeError):
+    pass
+
 import logging
-from faster_whisper import WhisperModel
 import io
 import numpy as np
 import json
-import os
 import threading
 import copy
 import tempfile
 
+# --- YENİ: PROAKTİF GPU STT BAŞLATMA ---
+# Diğer tüm uygulama import'larından ÖNCE STT servisini import edip başlatıyoruz.
+# Bu, GPU'nun doğru kütüphaneler tarafından (PyTorch/faster-whisper) ilk olarak
+# "rezerve edilmesini" sağlar ve cuDNN çakışmalarını önler.
+logging.info("🚀 GPU STT servisi proaktif olarak başlatılıyor...")
+from stt_service_gpu import get_stt_service
+try:
+    gpu_stt_service = get_stt_service()
+    logging.info("✅ GPU STT servisi başarıyla başlatıldı ve hazır!")
+except Exception as e:
+    logging.critical(f"❌ FATAL: GPU STT servisi başlatılamadı! Uygulama durduruluyor. Hata: {e}", exc_info=True)
+    # Eğer STT kritikse, burada uygulamayı durdurmak en sağlıklısıdır.
+    # raise RuntimeError("GPU STT servisi başlatılamadığı için uygulama başlatılamadı.") from e
+    gpu_stt_service = None # Veya hata durumunda None olarak ayarla
+
+# --- BİTTİ: PROAKTİF GPU STT BAŞLATMA ---
+
+
 from agents.orchestrator_agent import OrchestratorAgent
 from config import settings
+
 
 # --- YENİ: Dosya tabanlı, thread-safe oturum yönetimi ---
 class FileSessionStore:
@@ -30,12 +71,12 @@ class FileSessionStore:
                         json.dump({}, f)
 
     def _read_all(self):
-        with open(self._file_path, 'r') as f:
-            try:
+        try:
+            with open(self._file_path, 'r') as f:
                 return json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                logging.warning("Oturum dosyası okunamadı veya boş.")
-                return {}
+        except (json.JSONDecodeError, FileNotFoundError):
+            logging.warning("Oturum dosyası okunamadı veya boş. Boş bir sözlük döndürülüyor.")
+            return {}
 
     def _write_all(self, data):
         with open(self._file_path, 'w') as f:
@@ -52,10 +93,11 @@ class FileSessionStore:
     def __getitem__(self, session_id):
         with self._lock:
             data = self._read_all()
+            # get metodu None döndüreceği için deepcopy'den önce kontrol et
             session_data = data.get(session_id)
-            logging.info(f"Oturum verisi alınıyor '{session_id}': {session_data}")
-            # Referans sorunlarını önlemek için derin bir kopya döndür
-            return copy.deepcopy(session_data) if session_data else None
+            logging.info(f"Oturum verisi alınıyor '{session_id}': {'Var' if session_data else 'Yok'}")
+            return copy.deepcopy(session_data) if session_data is not None else None
+
 
     def __setitem__(self, session_id, value):
         with self._lock:
@@ -66,47 +108,13 @@ class FileSessionStore:
 # --- BİTTİ: Dosya tabanlı, thread-safe oturum yönetimi ---
 
 
-# Modelleri ve istemcileri bir kere yükle
-logging.info("Faster-Whisper modeli hazırlanıyor...")
-
-# Faster-Whisper Model - MANUEL YÜKLEME (check_whisper_model.bat ile önce yükle!)
-# Model zaten yüklü olmalı, burada sadece referans alıyoruz
-whisper_model = None
-
-def get_whisper_model():
-    """Model cache'den yüklenir (manuel olarak önceden indirilmiş olmalı)"""
-    global whisper_model
-    if whisper_model is None:
-        logging.info("🎤 Whisper modeli cache'den yükleniyor...")
-        try:
-            # Small model - CPU'da 3-4x daha hızlı, yeterli doğruluk
-            whisper_model = WhisperModel(
-                "small",  # medium → small (hız optimizasyonu)
-                device="cpu",
-                compute_type="int8",
-                download_root=None,
-                local_files_only=True
-            )
-            logging.info("✅ Faster-Whisper Small modeli yüklendi (INT8 - HIZ OPTİMİZE)")
-        except Exception as e:
-            logging.error(f"❌ Small model yüklenemedi, tiny deneniyor: {e}")
-            try:
-                # Fallback: tiny model (en hızlı)
-                whisper_model = WhisperModel(
-                    "tiny",
-                    device="cpu",
-                    compute_type="int8",
-                    download_root=None,
-                    local_files_only=True
-                )
-                logging.info("✅ Faster-Whisper Tiny modeli yüklendi (Fallback - ÇOK HIZLI)")
-            except Exception as e2:
-                logging.error(f"❌ Model yüklenemedi! download_whisper_medium.bat çalıştırın: {e2}")
-                raise RuntimeError(
-                    "Whisper modeli bulunamadı! "
-                    "Lütfen 'download_whisper_medium.bat' ile modeli indirin."
-                )
-    return whisper_model
+def get_gpu_stt():
+    """Önceden başlatılmış GPU STT servisini al (singleton)."""
+    if gpu_stt_service is None:
+        # Bu artık bir hata durumudur çünkü servisin başlangıçta yüklenmesi gerekir.
+        logging.error("Hata: GPU STT servisi başlangıçta yüklenemediği için kullanılamıyor.")
+        raise RuntimeError("GPU STT servisi mevcut değil veya başlangıçta başlatılamadı.")
+    return gpu_stt_service
 
 # Konuşma durumunu modül seviyesinde ve dosya tabanlı olarak sakla
 conversations = FileSessionStore('conversations.json')
@@ -116,56 +124,35 @@ logging.info("Orchestrator Agent başlatılıyor...")
 orchestrator_agent = OrchestratorAgent(conversations)
 
 async def process_audio_input(session_id: str, audio_data: bytes, websocket=None) -> str:
-    """Gelen ses verisini işler, metne çevirir ve yanıt üretir."""
+    """Gelen ses verisini işler, GPU ile metne çevirir ve yanıt üretir."""
     try:
         # Kullanıcıya ses alındığını göster
         if websocket:
             await websocket.send_text(json.dumps({
                 "type": "audio_received",
-                "message": "Ses işleniyor..."
+                "message": "🚀 GPU ile işleniyor..."
             }))
-        
-        # Sesi Metne Çevir (Whisper Medium)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as temp_audio:
-            temp_audio.write(audio_data)
-            temp_audio_path = temp_audio.name
-        
+
+        # GPU STT ile metne çevir (ULTRA HIZLI)
         try:
-            # Faster-Whisper Medium model
-            model = get_whisper_model()
-            
-            # GÜÇLENDİRİLMİŞ Context Prompt - Model'e domain bilgisi ver
-            context_prompt = """Güzellik salonu randevu sistemi.
-Hizmetler: saç kesimi, saç boyama, manikür, pedikür, cilt bakımı, kaş dizaynı, makyaj, masaj, epilasyon, kirpik lifting.
-Uzmanlar: Ayşe Demir, Zeynep Kaya, Elif Şahin, Ceyda Yılmaz, Fatma Can, Deniz Aksoy.
-Örnek müşteriler: Ahmet Hamdi Özkurt, Ayşe Yılmaz, Mehmet Kaya.
-Telefon formatı: 0555 123 45 67"""
-            
-            segments, info = model.transcribe(
-                temp_audio_path,
-                language="tr",
-                beam_size=5,  # 10 → 5 (hız optimizasyonu, yeterli doğruluk)
-                temperature=0.0,  # Deterministik (tutarlı)
-                vad_filter=True,
-                initial_prompt=context_prompt  # Domain bilgisi
-            )
-            
-            # Segments'i birleştir
-            user_text = " ".join([segment.text for segment in segments]).strip()
-            
-            logging.info(f"🎤 Algılanan dil: {info.language} (olasılık: {info.language_probability:.2%})")
-            
+            stt_service = get_gpu_stt() # Önceden yüklenmiş servisi al
+            user_text, process_time = stt_service.transcribe_audio_bytes(audio_data, language="tr")
+
+            logging.info(f"🎤 GPU STT: '{user_text}' ({process_time:.2f}s)")
+
             # Boş veya çok kısa transcript'leri reddet
             if not user_text or len(user_text) < 3:
-                logging.warning(f"⚠️ Boş veya çok kısa ses kaydı, işlem yapılmıyor: '{user_text}'")
-                return ""  # Boş yanıt döndür, işlem yapma
-            
-            logging.info(f"Kullanıcı dedi ki (sesten) ({session_id}): {user_text}")
-            
-        finally:
-            # Geçici dosyayı sil
-            if os.path.exists(temp_audio_path):
-                os.unlink(temp_audio_path)
+                logging.warning(f"⚠️ Boş veya çok kısa ses kaydı: '{user_text}'")
+                return ""
+
+            logging.info(f"Kullanıcı dedi ki (GPU-STT) ({session_id}): {user_text}")
+
+        except RuntimeError as e: # get_gpu_stt'den gelebilecek hatayı yakala
+            logging.error(f"❌ GPU STT servisi kullanılamıyor: {e}")
+            return "Üzgünüm, ses tanıma servisi şu an aktif değil."
+        except Exception as e:
+            logging.error(f"❌ GPU STT çevrim hatası: {e}", exc_info=True)
+            return "Üzgünüm, sesinizi metne çevirirken bir hata oluştu."
 
         # WebSocket'e transkripti gönder
         if websocket:
@@ -173,15 +160,15 @@ Telefon formatı: 0555 123 45 67"""
                 "type": "transcript",
                 "text": user_text
             }))
-            
+
             # KÜÇÜK GECİKME: Kullanıcı mesajının frontend'de render olması için bekle
             import asyncio
             await asyncio.sleep(0.3)  # 300ms - kullanıcı balonu göründükten sonra AI yanıtı gelsin
-        
+
         return await process_text_input(session_id, user_text, websocket)
 
     except Exception as e:
-        logging.error(f"Ses işlenirken hata oluştu: {e}", exc_info=True)
+        logging.error(f"Ses işlenirken genel hata oluştu: {e}", exc_info=True)
         return "Üzgünüm, sesinizi işlerken bir sorun oluştu."
 
 async def process_text_input(session_id: str, text_data: str, websocket=None) -> str:
@@ -192,7 +179,7 @@ async def process_text_input(session_id: str, text_data: str, websocket=None) ->
         if not text_data or len(text_data) < 2:
             logging.warning(f"⚠️ Boş veya çok kısa metin, işlem yapılmıyor: '{text_data}'")
             return ""  # Boş yanıt döndür
-        
+
         logging.info(f"Kullanıcı dedi ki (metin) ({session_id}): {text_data}")
         # WebSocket parametresini orchestrator'a geçir (streaming için)
         response = await orchestrator_agent.process_request(session_id, text_data, websocket)
