@@ -6,8 +6,21 @@ import random
 import string
 import logging
 
-# Config dosyanızda bu ayarların olduğunu varsayıyoruz
-from config import settings, SERVICE_DURATIONS
+# Config dosyasından ayarları al
+from config import settings
+
+# Varsayılan hizmet süreleri (dakika) - Directus'tan çekilemezse kullanılır
+SERVICE_DURATIONS = {
+    "sac_kesimi": 30,
+    "sac_boyama": 90,
+    "manikur": 45,
+    "pedikur": 60,
+    "cilt_bakimi": 60,
+    "makyaj": 45,
+    "agda": 30,
+    "kirpik": 45,
+    "kas_dizayn": 15,
+}
 
 # Sabit Tenant ID (Bunu config'den veya environment'tan almalısınız)
 # Eğer her istekte değişiyorsa __init__ metoduna parametre olarak eklenmeli.

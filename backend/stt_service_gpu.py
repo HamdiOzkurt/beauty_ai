@@ -93,7 +93,7 @@ class GPUWhisperSTT:
         """Modeli yükle - önce kalite, sonra hız odaklı fallback ile."""
 
         # 1) Tercih: GPU + float16 (RTX 4050 için ideal)
-        try:
+        try: 
             logging.info(f"🚀 Model yükleniyor: CUDA - {GPU_COMPUTE_TYPE} ({MODEL_SIZE})...")
             
             self.model = WhisperModel(
@@ -109,8 +109,8 @@ class GPUWhisperSTT:
             return
             
         except Exception as e:
-            logging.warning(f"⚠️ CUDA/{GPU_COMPUTE_TYPE} yüklenemedi: {str(e)[:120]}")
-            logging.info("🔄 CPU moduna geçiliyor...")
+            logging.warning(f"[WARN] CUDA/{GPU_COMPUTE_TYPE} yuklenemedi: {str(e)[:120]}")
+            logging.info("[INFO] CPU moduna geciliyor...")
             
             try:
                 self.model = WhisperModel(
@@ -310,7 +310,7 @@ class AudioProcessor:
 
     def _reset_stream(self):
         """Akış durumunu ve buffer'ı sıfırla."""
-        logging.debug("🔄 Akış sıfırlanıyor...")
+        logging.debug("[RESET] Akis sifirlaniyor...")
         self.audio_buffer = []
         self.speaking = False
         self.silence_frames = 0
