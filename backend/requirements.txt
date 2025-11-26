@@ -22,3 +22,6 @@ ctranslate2>=3.24.0
 soundfile>=0.12.0
 SpeechRecognition>=3.10.0
 PyAudio>=0.2.13
+torch
+torchaudio
+silero

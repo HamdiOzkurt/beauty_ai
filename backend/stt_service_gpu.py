@@ -33,6 +33,7 @@ import numpy as np
 from faster_whisper import WhisperModel
 import io
 import wave
+import torch
 
 # ==========================================
 # GPU HIZ OPTİMİZASYONU AYARLARI
@@ -43,7 +44,7 @@ FFMPEG_PATH = r"C:\Users\hamdi\Downloads\ffmpeg-8.0-full_build\ffmpeg-8.0-full_b
 
 # Model Boyutu: 'tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'
 # Türkçe için en iyi: large-v3 (en ağır ama maksimum doğruluk)
-MODEL_SIZE = "large-v3"
+MODEL_SIZE = "small"
 
 # Hesaplama Tipi: RTX serisi için "float16", eski kartlar için "int8"
 # cuDNN hatası varsa "int8" kullan (yine de GPU hızlı çalışır)
@@ -60,10 +61,34 @@ class GPUWhisperSTT:
     """GPU hızlandırmalı Whisper STT servisi"""
     
     def __init__(self):
-        """Faster-Whisper modelini GPU ile yükle"""
+        """Faster-Whisper ve VAD modellerini GPU ile yükle"""
         self.model = None
+        self.vad_model = None
+        self.vad_utils = None
+        
         self._load_model()
+        self._load_vad_model()
     
+    def _load_vad_model(self):
+        """Silero VAD modelini yükle."""
+        try:
+            logging.info("🔊 VAD modeli yükleniyor (silero-vad)...")
+            model, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                onnx=False  # ONNX sürümü CPU'da daha iyi, biz PyTorch istiyoruz
+            )
+            self.vad_model = model
+            self.vad_utils = utils
+            logging.info("✅ VAD modeli başarıyla yüklendi.")
+        except Exception as e:
+            logging.error(f"❌ VAD modeli yüklenemedi: {e}")
+            # VAD olmadan devam edilebilir ama streaming çalışmaz.
+            # Şimdilik hata verip durdurmak yerine sadece uyarıyoruz.
+            self.vad_model = None
+            self.vad_utils = None
+            
     def _load_model(self):
         """Modeli yükle - önce kalite, sonra hız odaklı fallback ile."""
 
@@ -152,10 +177,9 @@ class GPUWhisperSTT:
             # --- MAKSIMUM KALİTE TRANSKRİPSİYON (Türkçe optimizasyonu) ---
             segments, info = self.model.transcribe(
                 audio_file,
-                language=language,      # Türkçe sabit,
-
-                beam_size=5,            # Beam search: en iyi 5 yolu tara
-                best_of=5,              # Her segment için 5 deneme, en iyisini seç
+                language=language,      # Türkçe sabit
+                beam_size=2,            # Beam search: en iyi 5 yolu tara
+                best_of=3,              # Her segment için 5 deneme, en iyisini seç
                 temperature=0.0,        # Deterministik çıktı
                 patience=2.0,           # Daha sabırlı decode (kalite için)
                 length_penalty=1.0,     # Uzun cümleleri penalize etme
@@ -221,6 +245,135 @@ class GPUWhisperSTT:
         except Exception as e:
             logging.error(f"❌ Dosya transkripsiyon hatası: {e}")
             raise
+
+    def transcribe_tensor(self, audio_tensor, language: str = "tr") -> tuple:
+        """
+        Bir ses tensörünü (veya numpy dizisini) doğrudan transkribe eder.
+        Streaming için optimize edilmiştir, FFmpeg dönüşümü yapmaz.
+        """
+        if not self.model:
+            raise RuntimeError("Whisper modeli yüklenmemiş!")
+
+        start_time = time.time()
+        
+        try:
+            # --- STREAMING İÇİN OPTİMİZE EDİLMİŞ TRANSKRİPSİYON ---
+            # VAD filtresi burada harici olarak yapıldığı için kapatılabilir.
+            # Ancak yine de içerideki VAD'nin küçük sessizlikleri temizlemesi faydalı olabilir.
+            segments, info = self.model.transcribe(
+                audio_tensor,
+                language=language,
+                beam_size=5,
+                temperature=0.0,
+                condition_on_previous_text=True,
+                initial_prompt="Merhaba, randevu almak istiyorum. Yarın için müsait misiniz?",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=100) # İç VAD için daha agresif ayar
+            )
+            
+            text = " ".join([segment.text.strip() for segment in segments])
+            process_time = time.time() - start_time
+            
+            logging.info(f"🎤 STT (Stream): '{text[:50]}...' ({process_time:.2f}s - {info.language})")
+            
+            return text.strip(), process_time
+
+        except Exception as e:
+            logging.error(f"❌ Tensor transkripsiyon hatası: {e}")
+            raise
+
+    def create_audio_processor(self, **kwargs):
+        """Streaming için bir AudioProcessor nesnesi oluşturur."""
+        if not self.vad_model:
+            raise RuntimeError("VAD modeli yüklenemediği için streaming processor oluşturulamıyor.")
+        return AudioProcessor(stt_service=self, **kwargs)
+
+
+class AudioProcessor:
+    """
+    Gerçek zamanlı ses akışını işler, VAD kullanarak konuşmayı algılar,
+    biriktirir ve transkripsiyon için GPUWhisperSTT'ye gönderir.
+    """
+    def __init__(self, stt_service: GPUWhisperSTT, 
+                 vad_threshold: float = 0.5, 
+                 min_silence_duration_ms: int = 300, # Daha hassas ayar
+                 min_speech_duration_ms: int = 100, # Kısa sesleri de yakala
+                 sampling_rate: int = 16000):
+        
+        self.stt_service = stt_service
+        self.vad_threshold = vad_threshold
+        self.min_silence_duration_ms = min_silence_duration_ms
+        self.min_speech_duration_ms = min_speech_duration_ms
+        self.sampling_rate = sampling_rate
+
+        self._reset_stream()
+
+    def _reset_stream(self):
+        """Akış durumunu ve buffer'ı sıfırla."""
+        logging.debug("🔄 Akış sıfırlanıyor...")
+        self.audio_buffer = []
+        self.speaking = False
+        self.silence_frames = 0
+        self.speech_frames = 0
+
+    def process_chunk(self, chunk: bytes):
+        """
+        Gelen ses parçasını (chunk) işle.
+        Konuşma algılarsa buffer'a ekler.
+        Sessizlik algılarsa ve buffer doluysa transkripsiyonu tetikler.
+        """
+        # Gelen chunk'ı PyTorch tensor'a çevir
+        # Silero VAD 1D tensor bekler
+        audio_float32 = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_tensor = torch.from_numpy(audio_float32)
+
+        if audio_tensor.numel() == 0:
+            return None # Boş chunk'ı atla
+
+        # VAD ile konuşma olasılığını hesapla
+        speech_prob = self.stt_service.vad_model(audio_tensor, self.sampling_rate).item()
+
+        chunk_duration_ms = (len(chunk) / 2) / self.sampling_rate * 1000
+
+        if speech_prob > self.vad_threshold:
+            # Konuşma algılandı
+            self.silence_frames = 0
+            if not self.speaking:
+                logging.info("▶️ Konuşma başladı.")
+                self.speaking = True
+            
+            self.speech_frames += 1
+            self.audio_buffer.append(audio_tensor)
+            return None # Henüz transkript yok
+        else:
+            # Sessizlik algılandı
+            if self.speaking:
+                self.silence_frames += 1
+                total_silence_ms = self.silence_frames * chunk_duration_ms
+
+                if total_silence_ms >= self.min_silence_duration_ms:
+                    logging.info(f"⏹️ Konuşma bitti ({total_silence_ms:.0f}ms sessizlik). Transkripsiyon tetikleniyor.")
+                    
+                    full_audio = torch.cat(self.audio_buffer)
+                    
+                    # Konuşma çok kısaysa (gürültü olabilir), işlemi atla
+                    total_speech_ms = self.speech_frames * chunk_duration_ms
+                    if total_speech_ms < self.min_speech_duration_ms:
+                        logging.info(f"⏭️  Konuşma çok kısa ({total_speech_ms:.0f}ms), gürültü olarak kabul edildi ve atlandı.")
+                        self._reset_stream()
+                        return None
+
+                    # Buffer'daki sesi birleştir ve transkribe et
+                    try:
+                        transcript, _ = self.stt_service.transcribe_tensor(full_audio.numpy())
+                        self._reset_stream()
+                        return transcript
+                    except Exception as e:
+                        logging.error(f"STREAMING TRANSCRIBE ERROR: {e}")
+                        self._reset_stream()
+                        return None
+            
+            return None # Sessizlik devam ediyor veya konuşma hiç başlamadı
 
 
 # Global STT instance (singleton pattern - lazy load)
