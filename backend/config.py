@@ -24,7 +24,7 @@ class Settings:
     
     # Directus CMS Ayarları (YENİ)
     DIRECTUS_URL: str = os.getenv("DIRECTUS_URL", "https://cms.demirtech.com")
-    DIRECTUS_TOKEN: str = os.getenv("DIRECTUS_TOKEN", "")
+    DIRECTUS_TOKEN: str = os.getenv("DIRECTUS_TOKEN", "DXPcXJB20aGWv_rbQqJGMtcYgexlvffP")
     TENANT_ID: int = int(os.getenv("TENANT_ID", "1")) # Hangi şube/tenant için çalışıyorsa
     
     # Ses İşleme

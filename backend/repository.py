@@ -7,7 +7,7 @@ import string
 import logging
 
 # Config dosyanızda bu ayarların olduğunu varsayıyoruz
-from config import settings, SERVICE_DURATIONS
+from config import settings
 
 # Sabit Tenant ID (Bunu config'den veya environment'tan almalısınız)
 # Eğer her istekte değişiyorsa __init__ metoduna parametre olarak eklenmeli.
@@ -101,7 +101,7 @@ class CustomerRepository(BaseDirectusRepository):
             "first_name": first_name,
             "last_name": last_name,
             "phone_number": phone,
-            "created_date": datetime.utcnow().isoformat(),
+            "created_date": datetime.now().replace(tzinfo=None).isoformat(),
             # Email alanı şemada yoktu ama varsa ekleyebilirsiniz: "email": email
         }
         data = self._post("voises_customers", payload)
@@ -126,15 +126,15 @@ class AppointmentRepository(BaseDirectusRepository):
         data = self._get("voises_experts", params)
         return data[0]['id'] if data else None
 
-    def _get_service_id_by_name(self, service_name: str) -> Optional[int]:
-        """Hizmet isminden ID bulmak için."""
+    def _get_service_by_name(self, service_name: str) -> Optional[Dict]:
+        """Hizmet isminden hizmet bilgisini (ID, duration vb.) bulmak için."""
         params = {
             "filter[_and][0][name][_icontains]": service_name,
             "filter[_and][1][tenant_id][_eq]": CURRENT_TENANT_ID,
             "limit": 1
         }
         data = self._get("voises_services", params)
-        return data[0]['id'] if data else None
+        return data[0] if data else None
 
     def check_availability(
         self,
@@ -192,11 +192,15 @@ class AppointmentRepository(BaseDirectusRepository):
         if not exp_id:
             raise Exception(f"Uzman bulunamadı: {expert_name}")
 
-        # 2. Hizmet ID'sini bul
-        service_id = self._get_service_id_by_name(service_type)
-        
-        # 3. Süreyi hesapla
-        duration = SERVICE_DURATIONS.get(service_type, 60)
+        # 2. Hizmet bilgisini bul (ID ve duration)
+        service = self._get_service_by_name(service_type)
+        if not service:
+            raise Exception(f"Hizmet bulunamadı: {service_type}")
+
+        service_id = service['id']
+
+        # 3. Süreyi CMS'ten al (yoksa varsayılan 60 dk)
+        duration = service.get('duration', 60)
         end_time = appointment_date + timedelta(minutes=duration)
         
         # Şemada 'appointment_code' alanı yoktu. 
@@ -211,7 +215,7 @@ class AppointmentRepository(BaseDirectusRepository):
             "date_time": appointment_date.isoformat(),
             "end_date": end_time.isoformat(),
             "status": "confirmed", # Dropdown değerine uygun olmalı
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now().replace(tzinfo=None).isoformat(),
             "notes": f"Auto-generated Code: {appt_code}" # Kodu notlara ekledik
         }
         
@@ -294,9 +298,9 @@ class AppointmentRepository(BaseDirectusRepository):
                         continue
                         
                     # Çakışma Kontrolü
-                    # Directus'tan gelen string tarihleri objeye çevir
-                    appt_start = datetime.fromisoformat(appt['date_time'].replace('Z', '+00:00'))
-                    appt_end = datetime.fromisoformat(appt['end_date'].replace('Z', '+00:00'))
+                    # Directus'tan gelen string tarihleri objeye çevir (timezone-naive olarak)
+                    appt_start = datetime.fromisoformat(appt['date_time'].replace('Z', '+00:00')).replace(tzinfo=None)
+                    appt_end = datetime.fromisoformat(appt['end_date'].replace('Z', '+00:00')).replace(tzinfo=None)
                     
                     # (StartA < EndB) and (EndA > StartB)
                     if (potential_slot < appt_end) and (slot_end > appt_start):
