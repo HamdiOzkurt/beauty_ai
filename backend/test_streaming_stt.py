@@ -23,12 +23,12 @@ logging.basicConfig(
 )
 
 # ==================================
-# Mikrofon ve Ses Ayarları
+# Mikrofon ve Ses Ayarlari
 # ==================================
-CHUNK_SIZE = 1024          # Her seferinde okunacak ses parçası boyutu (bytes)
-FORMAT = pyaudio.paInt16   # 16-bit ses formatı
+CHUNK_SIZE = 512           # Her seferinde okunacak ses parcasi boyutu (samples) - VAD icin 512 gerekli
+FORMAT = pyaudio.paInt16   # 16-bit ses formati
 CHANNELS = 1               # Mono
-RATE = 16000               # 16kHz örnekleme hızı (Whisper ve VAD için standart)
+RATE = 16000               # 16kHz ornekleme hizi (Whisper ve VAD icin standart)
 
 # AudioProcessor için VAD ayarları
 # Bu değerlerle oynayarak gecikme/hassasiyet dengesini ayarlayabilirsiniz.
@@ -39,28 +39,28 @@ VAD_THRESHOLD = 0.4                # VAD'ın konuşma olarak algılama eşiği (
 def main():
     """Ana test fonksiyonu"""
     print("=" * 60)
-    print("🎤 Real-Time Streaming STT Testi")
+    print("[MIC] Real-Time Streaming STT Testi")
     print("=" * 60)
     
     # 1. STT Servisini ve AudioProcessor'ı Başlat
     try:
-        print("1. STT servisi yükleniyor (Bu işlem model boyutuna göre zaman alabilir)...")
+        print("1. STT servisi yukleniyor (Bu islem model boyutuna gore zaman alabilir)...")
         stt_service = get_stt_service()
         audio_processor = stt_service.create_audio_processor(
             min_silence_duration_ms=VAD_MIN_SILENCE_DURATION_MS,
             min_speech_duration_ms=VAD_MIN_SPEECH_DURATION_MS,
             vad_threshold=VAD_THRESHOLD
         )
-        print("✅ STT servisi ve Audio Processor hazır.")
+        print("[OK] STT servisi ve Audio Processor hazir.")
     except Exception as e:
-        logging.error(f"❌ Servis başlatılamadı: {e}")
+        logging.error(f"[ERROR] Servis baslatilamadi: {e}")
         return
 
-    # 2. Mikrofonu Başlat
+    # 2. Mikrofonu Baslat
     p = pyaudio.PyAudio()
     stream = None
     try:
-        print("\n2. Mikrofon başlatılıyor...")
+        print("\n2. Mikrofon baslatiliyor...")
         stream = p.open(
             format=FORMAT,
             channels=CHANNELS,
@@ -68,11 +68,11 @@ def main():
             input=True,
             frames_per_buffer=CHUNK_SIZE
         )
-        print("✅ Mikrofon aktif. Şimdi konuşabilirsiniz...")
-        print("   (Çıkmak için Ctrl+C)")
+        print("[OK] Mikrofon aktif. Simdi konusabilirsiniz...")
+        print("   (Cikmak icin Ctrl+C)")
 
     except Exception as e:
-        logging.error(f"❌ Mikrofon başlatılamadı. Lütfen mikrofonunuzun bağlı olduğundan emin olun. Hata: {e}")
+        logging.error(f"[ERROR] Mikrofon baslatilamadi. Lutfen mikrofonunuzun bagli oldugunu emin olun. Hata: {e}")
         p.terminate()
         return
 
@@ -85,24 +85,24 @@ def main():
             # Ses parçasını AudioProcessor'a gönder
             result = audio_processor.process_chunk(chunk)
             
-            # Eğer bir transkript döndüyse (konuşma bittiyse), ekrana yazdır
+            # Eger bir transkript donduyse (konusma bittiyse), ekrana yazdir
             if result:
                 print("\n" + "="*30)
-                print(f"💬 Tespit Edilen Metin: {result}")
+                print(f"[SPEECH] Tespit Edilen Metin: {result}")
                 print("="*30 + "\n")
                 print("Dinlemeye devam ediyor...")
 
     except KeyboardInterrupt:
-        print("\n\n🛑 Test sonlandırılıyor...")
+        print("\n\n[STOP] Test sonlandiriliyor...")
     except Exception as e:
-        logging.error(f"Bir hata oluştu: {e}")
+        logging.error(f"Bir hata olustu: {e}")
     finally:
-        # 4. Kaynakları Temizle
+        # 4. Kaynaklari Temizle
         if stream:
             stream.stop_stream()
             stream.close()
         p.terminate()
-        print("✅ Kaynaklar temizlendi. Görüşmek üzere!")
+        print("[OK] Kaynaklar temizlendi. Gorusmek uzere!")
 
 
 if __name__ == "__main__":

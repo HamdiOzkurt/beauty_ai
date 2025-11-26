@@ -7,7 +7,9 @@ import string
 import logging
 
 # Config dosyanızda bu ayarların olduğunu varsayıyoruz
+# Config dosyasından ayarları al
 from config import settings
+
 
 # Sabit Tenant ID (Bunu config'den veya environment'tan almalısınız)
 # Eğer her istekte değişiyorsa __init__ metoduna parametre olarak eklenmeli.
