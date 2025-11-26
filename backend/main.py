@@ -11,21 +11,9 @@ import os
 # Projenin kök dizinini (backend) Python yoluna ekle
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ⚠️ KRİTİK: PyTorch cuDNN PATH fix - TÜM import'lardan ÖNCE!
-os.environ['CUDA_MODULE_LOADING'] = 'LAZY'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import torch
-torch_lib_path = os.path.join(os.path.dirname(torch.__file__), 'lib')
-
-# Windows PATH'e ekle (CTranslate2 için)
-if torch_lib_path not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = torch_lib_path + os.pathsep + os.environ.get('PATH', '')
-    
-# Ek olarak DLL directory'ye de ekle
-try:
-    os.add_dll_directory(torch_lib_path)
-except (OSError, AttributeError):
-    pass
+# ⚠️ KRİTİK: CUDA/cuDNN ortamını hazırla - TÜM import'lardan ÖNCE!
+import cuda_setup  # PATH ayarları
+import cudnn_preload  # DLL'leri önceden yükle
 
 import uuid
 import json

@@ -1,3 +1,14 @@
+# ⚠️ KRİTİK: CUDA/cuDNN ortamını hazırla - TÜM import'lardan ÖNCE!
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 1) PATH ayarları
+import cuda_setup
+
+# 2) DLL'leri önceden yükle (ctranslate2'den ÖNCE!)
+import cudnn_preload
+
 from fastapi import FastAPI
 from fastmcp import FastMCP
 from starlette.middleware.cors import CORSMiddleware

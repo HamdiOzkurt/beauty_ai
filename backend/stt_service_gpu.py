@@ -3,12 +3,18 @@ GPU-Accelerated Speech-to-Text Service
 Faster-Whisper ile CUDA destekli hızlı transkripsiyon
 """
 
+# ⚠️ KRİTİK: CUDA/cuDNN ortamını hazırla - TÜM import'lardan ÖNCE!
+import sys
 import os
-import warnings
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ==================================================
-# ÖNCE ORTAM / DLL AYARLARI (Windows için kritik)
-# ==================================================
+# 1) PATH ayarları
+import cuda_setup
+
+# 2) DLL'leri önceden yükle
+import cudnn_preload
+
+import warnings
 
 # cuDNN / CUDA ile ilgili uyarıları kıs
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -16,71 +22,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # CUDA modüllerini lazy yükle (Whisper/Faster-Whisper önerisi)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
-
-
-def _add_dll_dir(path: str) -> None:
-    """Verilen dizini PATH ve DLL arama yollarına ekle (Windows)."""
-    if not path or not os.path.isdir(path):
-        return
-
-    current_path = os.environ.get("PATH", "")
-    if path not in current_path:
-        os.environ["PATH"] = path + os.pathsep + current_path
-
-    try:
-        # Windows 10+ için ek güvence
-        os.add_dll_directory(path)
-    except (OSError, AttributeError):
-        # Diğer platformlarda veya eski Windows'ta sorun çıkarırsa sessizce geç
-        pass
-
-
-# 1) NVIDIA Python paketlerinden gelen cuDNN ve cuBLAS DLL'lerini ekle
-try:
-    import nvidia.cudnn  # type: ignore
-
-    cudnn_root = nvidia.cudnn.__path__[0]  # paket dizini
-    cudnn_bin = os.path.join(cudnn_root, "bin")
-    _add_dll_dir(cudnn_bin)
-
-    # Bazı CTranslate2 Windows derlemeleri, cuDNN DLL'lerini kendi modül
-    # dizininde arıyor. Bu yüzden özellikle cudnn_ops64_9.dll dosyasını
-    # ctranslate2 modül klasörüne de kopyalıyoruz ki hata mesajı kesilsin.
-    try:
-        import shutil
-        import ctranslate2 as _ct2  # type: ignore
-
-        ct2_dir = os.path.dirname(_ct2.__file__)
-        src = os.path.join(cudnn_bin, "cudnn_ops64_9.dll")
-        dst = os.path.join(ct2_dir, "cudnn_ops64_9.dll")
-
-        if os.path.isfile(src) and not os.path.isfile(dst):
-            shutil.copy2(src, dst)
-    except Exception:
-        # Kopyalama başarısız olursa bile, PATH/dll_directory üzerinden
-        # yükleme çoğu durumda yeterli olacaktır.
-        pass
-except Exception:
-    # Paket yoksa veya farklı bir düzen varsa sessizce devam et
-    pass
-
-try:
-    import nvidia.cublas  # type: ignore
-
-    cublas_root = nvidia.cublas.__path__[0]
-    cublas_bin = os.path.join(cublas_root, "bin")
-    _add_dll_dir(cublas_bin)
-except Exception:
-    pass
-
-# 2) PyTorch'un kendi CUDA DLL'lerini de arama yoluna ekle
-try:
-    import torch
-
-    torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
-    _add_dll_dir(torch_lib_path)
-except Exception:
-    torch = None  # type: ignore
 
 
 # ==================================================
@@ -96,6 +37,9 @@ import wave
 # ==========================================
 # GPU HIZ OPTİMİZASYONU AYARLARI
 # ==========================================
+
+# FFmpeg yolu (Windows için sabit path)
+FFMPEG_PATH = r"C:\Users\hamdi\Downloads\ffmpeg-8.0-full_build\ffmpeg-8.0-full_build\bin\ffmpeg.exe"
 
 # Model Boyutu: 'tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'
 # Türkçe için en iyi: large-v3 (en ağır ama maksimum doğruluk)
@@ -187,7 +131,7 @@ class GPUWhisperSTT:
             try:
                 # FFmpeg ile yüksek kaliteli WAV'a çevir
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", temp_input_path,
+                    FFMPEG_PATH, "-y", "-i", temp_input_path,
                     "-ar", "16000",  # 16kHz sampling rate (Whisper için optimal)
                     "-ac", "1",       # Mono
                     "-c:a", "pcm_s16le",  # 16-bit PCM
@@ -208,7 +152,8 @@ class GPUWhisperSTT:
             # --- MAKSIMUM KALİTE TRANSKRİPSİYON (Türkçe optimizasyonu) ---
             segments, info = self.model.transcribe(
                 audio_file,
-                language=language,      # Türkçe sabit
+                language=language,      # Türkçe sabit,
+
                 beam_size=5,            # Beam search: en iyi 5 yolu tara
                 best_of=5,              # Her segment için 5 deneme, en iyisini seç
                 temperature=0.0,        # Deterministik çıktı

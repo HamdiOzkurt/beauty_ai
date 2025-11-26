@@ -50,7 +50,7 @@ class Settings:
 
     # Ollama
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3-vl:8b ")
 
     # MCP Sunucusu
     MCP_SERVER_HOST: str = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
