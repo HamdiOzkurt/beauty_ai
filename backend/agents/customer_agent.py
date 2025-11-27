@@ -144,7 +144,17 @@ Analiz et ve JSON formatında döndür:
 """
         logging.debug(f"[{self.name}] Ollama Müşteri Davranış Analizi Prompt'u:\n{analysis_prompt}")
         try:
-            payload = {"model": self.model, "prompt": analysis_prompt, "stream": False, "format": "json"}
+            payload = {
+                "model": self.model, 
+                "prompt": analysis_prompt, 
+                "stream": False, 
+                "format": "json",
+                "options": {
+                    "num_gpu": 99,  # Tüm katmanları GPU'ya yükle
+                    "num_thread": 4,
+                    "temperature": 0.7
+                }
+            }
             response = requests.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload, timeout=30)
             response.raise_for_status()
             analysis = json.loads(response.json()["response"])

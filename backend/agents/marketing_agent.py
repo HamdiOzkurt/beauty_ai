@@ -98,7 +98,17 @@ JSON formatında şu yapıda bir yanıt ver:
         logging.debug(f"[{self.name}] Ollama Hizmet Öneri Prompt'u:\n{personalization_prompt}")
 
         try:
-            payload = {"model": self.model, "prompt": personalization_prompt, "stream": False, "format": "json"}
+            payload = {
+                "model": self.model, 
+                "prompt": personalization_prompt, 
+                "stream": False, 
+                "format": "json",
+                "options": {
+                    "num_gpu": 99,  # Tüm katmanları GPU'ya yükle
+                    "num_thread": 4,
+                    "temperature": 0.7
+                }
+            }
             response = requests.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload, timeout=30)
             response.raise_for_status()
             
@@ -145,7 +155,16 @@ Tek bir paragrafta, en fazla 2-3 cümlelik bir pazarlama mesajı oluştur.
         logging.debug(f"[{self.name}] Ollama Kampanya Mesajı Prompt'u:\n{campaign_prompt}")
 
         try:
-            payload = {"model": self.model, "prompt": campaign_prompt, "stream": False}
+            payload = {
+                "model": self.model, 
+                "prompt": campaign_prompt, 
+                "stream": False,
+                "options": {
+                    "num_gpu": 99,  # Tüm katmanları GPU'ya yükle
+                    "num_thread": 4,
+                    "temperature": 0.7
+                }
+            }
             response = requests.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload, timeout=30)
             response.raise_for_status()
             
