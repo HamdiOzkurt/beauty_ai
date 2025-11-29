@@ -34,9 +34,13 @@ class MarketingAgent(BaseAgent):
         elif task_type == "personalize_offer":
             return await self._personalize_offer(params, conversation)
         elif task_type == "list_services":
-            return await self.call_mcp_tool("list_services", params)
+            # list_services parametresiz çağrılır
+            return await self.call_mcp_tool("list_services", {})
         elif task_type == "list_experts":
-            return await self.call_mcp_tool("list_experts", params)
+            # list_experts sadece service_type parametresi alabilir
+            service_type = params.get("service_type") or conversation.get("collected", {}).get("service")
+            mcp_params = {"service_type": service_type} if service_type else {}
+            return await self.call_mcp_tool("list_experts", mcp_params)
         
         return {"success": False, "error": "Bilinmeyen görev tipi"}
     
@@ -129,52 +133,34 @@ JSON formatında şu yapıda bir yanıt ver:
     
     async def _check_campaigns(self, params: Dict, conversation: Dict) -> Dict:
         """
-        Kampanya kontrolü ve kişiselleştirilmiş mesaj oluşturma.
+        Kampanya kontrolü - MCP'den gelen bilgiyi doğrudan kullan.
         """
         mcp_result = await self.call_mcp_tool("check_campaigns", params)
         
         if not mcp_result.get("success") or not mcp_result.get("campaigns"):
-            mcp_result["marketing_message"] = "Şu an size özel aktif bir kampanyamız bulunmuyor."
+            mcp_result["marketing_message"] = "Şu an aktif bir kampanyamız bulunmuyor."
             return mcp_result
         
         campaigns = mcp_result["campaigns"]
         
-        campaign_prompt = f"""
-Müşteri için etkili bir kampanya mesajı oluştur.
-
-Mevcut Aktif Kampanyalar:
-{chr(10).join([f"- {c.get('name')}: {c.get('description')}" for c in campaigns])}
-
-Görevin:
-1. Bu kampanyalar arasından en cazip olanı veya genel bir temayı vurgula.
-2. Mesajda bir aciliyet veya özel teklif hissi yarat (örneğin "sadece bu haftaya özel", "randevunuza ek olarak").
-3. Doğal, samimi ve profesyonel bir dil kullan.
-
-Tek bir paragrafta, en fazla 2-3 cümlelik bir pazarlama mesajı oluştur.
-"""
-        logging.debug(f"[{self.name}] Ollama Kampanya Mesajı Prompt'u:\n{campaign_prompt}")
-
-        try:
-            payload = {
-                "model": self.model, 
-                "prompt": campaign_prompt, 
-                "stream": False,
-                "options": {
-                    "num_gpu": 99,  # Tüm katmanları GPU'ya yükle
-                    "num_thread": 4,
-                    "temperature": 0.7
-                }
-            }
-            response = requests.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload, timeout=30)
-            response.raise_for_status()
+        # MCP'den gelen bilgiyi kullanarak basit, doğru mesaj oluştur
+        campaign_messages = []
+        for c in campaigns:
+            name = c.get('name', '')
+            discount = c.get('discount', '')
+            end_date = c.get('end_date', '')
             
-            marketing_message = response.json()["response"].strip()
-            logging.debug(f"[{self.name}] Ollama Kampanya Mesajı Sonucu: {marketing_message}")
-            mcp_result["marketing_message"] = marketing_message
-        except Exception as e:
-            logging.error(f"[{self.name}] Kampanya mesajı oluşturma hatası: {e}")
-            mcp_result["marketing_message"] = "Harika kampanyalarımız var! Detaylı bilgi için bize danışabilirsiniz."
-            
+            # Basit ve doğru mesaj
+            if end_date:
+                msg = f"{name} kampanyamız var. {end_date} tarihine kadar geçerli."
+            else:
+                msg = f"{name} kampanyamız var."
+            campaign_messages.append(msg)
+        
+        marketing_message = " ".join(campaign_messages)
+        mcp_result["marketing_message"] = marketing_message
+        
+        logging.info(f"[{self.name}] Kampanya mesajı: {marketing_message}")
         return mcp_result
     
     async def _personalize_offer(self, params: Dict, conversation: Dict) -> Dict:

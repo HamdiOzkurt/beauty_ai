@@ -98,6 +98,13 @@ class FileSessionStore:
             logging.info(f"Oturum verisi alınıyor '{session_id}': {'Var' if session_data else 'Yok'}")
             return copy.deepcopy(session_data) if session_data is not None else None
 
+    def get(self, session_id, default=None):
+        """Dict-like get method"""
+        with self._lock:
+            data = self._read_all()
+            session_data = data.get(session_id)
+            logging.info(f"Oturum verisi alınıyor (get) '{session_id}': {'Var' if session_data else 'Yok'}")
+            return copy.deepcopy(session_data) if session_data is not None else default
 
     def __setitem__(self, session_id, value):
         with self._lock:

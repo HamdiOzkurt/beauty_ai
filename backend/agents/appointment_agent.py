@@ -42,7 +42,8 @@ class AppointmentAgent(BaseAgent):
         # YENİ EKLENEN KISIM: list_services ve list_experts görevlerini işle
         elif task_type == "list_services":
             logging.info(f"[{self.name}] Hizmet listesi için MCP aracı çağrılıyor.")
-            return await self.call_mcp_tool("list_services", params)
+            # list_services parametresiz çağrılır
+            return await self.call_mcp_tool("list_services", {})
         elif task_type == "list_experts":
             logging.info(f"[{self.name}] Uzman listesi için MCP aracı çağrılıyor.")
             # Eğer params veya conversation'da service_type varsa, filtreleme için geç
@@ -66,13 +67,28 @@ class AppointmentAgent(BaseAgent):
 
         logging.info(f"[{self.name}] Randevu oluşturma MCP aracına yönlendiriliyor. Parametreler: {params}")
         
-        # Parametre adını MCP tool'un beklediği şekilde düzenle
-        # Agent genelde 'date_time' gönderir ama MCP 'appointment_datetime' bekler
-        appointment_dt = params.get('date_time') or params.get('appointment_datetime')
+        # 🔧 PARAMETRELERİ NORMALIZE ET (orchestrator'dan gelen formatı MCP formatına çevir)
+        # orchestrator: phone, service, date, time
+        # MCP beklenen: customer_phone, service_type, appointment_datetime
+        
+        # 1. customer_phone: 'phone' veya 'customer_phone'
+        customer_phone = params.get('customer_phone') or params.get('phone')
+        
+        # 2. service_type: 'service_type' veya 'service'
+        service_type = params.get('service_type') or params.get('service')
+        
+        # 3. appointment_datetime: birleştir veya al
+        appointment_dt = params.get('appointment_datetime') or params.get('date_time')
+        if not appointment_dt and params.get('date') and params.get('time'):
+            # date ve time ayrı geldiyse birleştir: "2025-11-29 11:00"
+            appointment_dt = f"{params['date']} {params['time']}"
+        elif not appointment_dt and params.get('date'):
+            # Sadece date varsa (time yok)
+            appointment_dt = params['date']
         
         mcp_params = {
-            'customer_phone': params.get('customer_phone'),
-            'service_type': params.get('service_type'),
+            'customer_phone': customer_phone,
+            'service_type': service_type,
             'appointment_datetime': appointment_dt,
             'customer_name': params.get('customer_name'),
             'expert_name': params.get('expert_name')
@@ -102,15 +118,27 @@ class AppointmentAgent(BaseAgent):
             }
     
     async def _cancel_appointment(self, params: Dict, conversation: Dict) -> Dict:
-        # ...
-        # Bu fonksiyonun içinde de 'conversation' içindeki bilgilere erişebilirsiniz.
-        # Örneğin, iptal edilecek randevu kodu hafızada varsa onu kullanabilirsiniz.
-        if 'appointment_code' not in params and conversation.get("user_info", {}).get("appointment_code"):
-            params['appointment_code'] = conversation['user_info']['appointment_code']
+        """Randevu iptal et - telefon numarası veya appointment_code ile."""
         
-        # ... geri kalan kod aynı ...
-        # ...
-        mcp_result = await self.call_mcp_tool("cancel_appointment", params)
+        # Önce telefon numarasını kontrol et (collected state'ten)
+        phone = params.get("phone") or conversation.get("collected", {}).get("phone")
+        appointment_code = params.get("appointment_code")
+        
+        # MCP parametrelerini hazırla
+        mcp_params = {}
+        
+        if phone:
+            mcp_params["phone"] = phone
+            logging.info(f"[{self.name}] Randevu iptal - telefon ile: {phone}")
+        
+        if appointment_code:
+            mcp_params["appointment_code"] = appointment_code
+            logging.info(f"[{self.name}] Randevu iptal - kod ile: {appointment_code}")
+        
+        if not mcp_params:
+            return {"success": False, "error": "İptal için telefon numarası veya randevu kodu gerekli."}
+        
+        mcp_result = await self.call_mcp_tool("cancel_appointment", mcp_params)
         return mcp_result
     
     async def _check_availability(self, params: Dict, conversation: Dict) -> Dict:

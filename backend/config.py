@@ -24,7 +24,7 @@ class Settings:
     
     # Directus CMS Ayarları (YENİ)
     DIRECTUS_URL: str = os.getenv("DIRECTUS_URL", "https://cms.demirtech.com")
-    DIRECTUS_TOKEN: str = os.getenv("DIRECTUS_TOKEN", "kp6gpYx_17bF4pBnKe0ooycvU2-A0XqC")
+    DIRECTUS_TOKEN: str = os.getenv("DIRECTUS_TOKEN", "")
     TENANT_ID: int = int(os.getenv("TENANT_ID", "1")) # Hangi şube/tenant için çalışıyorsa
     
     # Ses İşleme
@@ -47,11 +47,11 @@ class Settings:
     MAX_CONVERSATION_TURNS: int = 20
     MAX_RETRY_ATTEMPTS: int = 3
     AGENT_TEMPERATURE: float = 0.7
-    AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
+    AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
 
     # Ollama
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3-vl:8b ")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
 
     # MCP Sunucusu
     MCP_SERVER_HOST: str = os.getenv("MCP_SERVER_HOST", "127.0.0.1")

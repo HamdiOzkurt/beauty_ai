@@ -64,6 +64,19 @@ class BaseDirectusRepository:
         logging.error(f"Directus PATCH Error ({collection}): {response.text}")
         return None
 
+class ServiceRepository(BaseDirectusRepository):
+    """voises_services tablosu işlemleri"""
+
+    def list_all(self) -> List[DirectusItem]:
+        """Belirli bir tenant'a ait tüm aktif hizmetleri listeler."""
+        params = {
+            "filter[_and][0][is_active][_eq]": True,
+            "filter[_and][1][tenant_id][_eq]": CURRENT_TENANT_ID,
+            "fields": "name" # Sadece hizmet ismini çekmek yeterli
+        }
+        data = self._get("voises_services", params)
+        return [DirectusItem(**item) for item in data]
+
 class CustomerRepository(BaseDirectusRepository):
     """voises_customers tablosu işlemleri"""
 
@@ -140,29 +153,55 @@ class AppointmentRepository(BaseDirectusRepository):
 
     def check_availability(
         self,
-        expert_id: int, # Artık ID ile kontrol ediyoruz
+        expert_id: int,
         start_time: datetime,
         duration_minutes: int
     ) -> bool:
-        
+        """Belirli bir uzmanın belirli bir zamanda müsait olup olmadığını kontrol eder."""
         end_time = start_time + timedelta(minutes=duration_minutes)
         
-        # Directus JSON Filtreleme
-        # Mantık: Aynı uzman, iptal edilmemiş VE zaman çakışması var
-        filter_query = {
-            "_and": [
-                {"expert_id": {"_eq": expert_id}},
-                {"tenant_id": {"_eq": CURRENT_TENANT_ID}},
-                {"status": {"_in": ["pending", "confirmed"]}}, # Dropdown değerlerinize göre güncelleyin
-                {"_and": [
-                    {"date_time": {"_lt": end_time.isoformat()}}, # Mevcut Başlangıç < Yeni Bitiş
-                    {"end_date": {"_gt": start_time.isoformat()}} # Mevcut Bitiş > Yeni Başlangıç
-                ]}
-            ]
+        # ÖNCE: Basit sorgu - sadece aynı gün ve aynı uzman
+        params = {
+            "filter[expert_id][_eq]": expert_id,
+            "filter[tenant_id][_eq]": CURRENT_TENANT_ID,
+            "fields": "id,date_time,end_date,status",
+            "limit": -1
         }
         
-        params = {"filter": json.dumps(filter_query)}
-        conflicts = self._get("voises_appointments", params)
+        logging.info(f"[check_availability] Uzman ID: {expert_id}, Zaman: {start_time.isoformat()}")
+        logging.info(f"[check_availability] Sorgu: {params}")
+        
+        all_appointments = self._get("voises_appointments", params)
+        logging.info(f"[check_availability] Bulunan TÜM randevu: {len(all_appointments)}")
+        
+        # Python'da hem tarih hem status filtrele
+        conflicts = []
+        for appt in all_appointments:
+            status = appt.get('status')
+            if status not in ['pending', 'confirmed']:
+                continue
+            
+            try:
+                appt_start_str = appt.get('date_time')
+                appt_end_str = appt.get('end_date')
+                
+                if not appt_start_str or not appt_end_str:
+                    logging.warning(f"[check_availability] Randevu {appt.get('id')} tarih bilgisi eksik!")
+                    continue
+                
+                # Timezone'u temizle ve parse et
+                appt_start = datetime.fromisoformat(appt_start_str.replace('Z', '+00:00').replace('+00:00', ''))
+                appt_end = datetime.fromisoformat(appt_end_str.replace('Z', '+00:00').replace('+00:00', ''))
+                
+                # Çakışma kontrolü: (StartA < EndB) and (EndA > StartB)
+                if (start_time < appt_end) and (end_time > appt_start):
+                    conflicts.append(appt)
+                    logging.info(f"[check_availability] ❌ ÇAKIŞMA! Randevu ID={appt.get('id')}, {appt_start} - {appt_end}, Status={status}")
+            except Exception as e:
+                logging.error(f"[check_availability] Tarih parse hatası (ID={appt.get('id')}): {e}")
+                continue
+        
+        logging.info(f"[check_availability] Toplam çakışma: {len(conflicts)}")
         return len(conflicts) == 0
 
     def get_by_id(self, appointment_id: int) -> Optional[DirectusItem]:
@@ -251,16 +290,28 @@ class AppointmentRepository(BaseDirectusRepository):
         end_of_day = datetime.combine(day, datetime.max.time())
         
         # 2. O günkü TÜM randevuları çek (Sadece bu tenant için)
+        # NOT: Status filtresini Python tarafında yapalım, Directus _in bazen sorunlu
         params = {
-            "filter[_and][0][date_time][_gte]": start_of_day.isoformat(),
-            "filter[_and][1][date_time][_lte]": end_of_day.isoformat(),
-            "filter[_and][2][tenant_id][_eq]": CURRENT_TENANT_ID,
-            "filter[_and][3][status][_in]": ["confirmed", "pending"],
-            "fields": "date_time,end_date,expert_id,expert_id.first_name,expert_id.last_name", # İlişkili uzman adını da çek
-            "limit": -1 # Hepsini getir
+            "filter[date_time][_gte]": start_of_day.isoformat(),
+            "filter[date_time][_lte]": end_of_day.isoformat(),
+            "filter[tenant_id][_eq]": CURRENT_TENANT_ID,
+            "fields": "id,date_time,end_date,status,expert_id,expert_id.first_name,expert_id.last_name",
+            "limit": -1
         }
         
-        daily_appointments_data = self._get("voises_appointments", params)
+        logging.info(f"[find_available_slots_for_day] Sorgu parametreleri: {params}")
+        all_appointments = self._get("voises_appointments", params)
+        
+        # Python tarafında status filtrele
+        daily_appointments_data = [
+            appt for appt in all_appointments 
+            if appt.get('status') in ['confirmed', 'pending']
+        ]
+        
+        # DEBUG: Gelen randevuları logla
+        logging.info(f"[find_available_slots_for_day] Tarih: {day}, Bulunan randevu sayısı: {len(daily_appointments_data)}")
+        for appt in daily_appointments_data:
+            logging.info(f"[find_available_slots_for_day] Randevu: ID={appt.get('id')}, DateTime={appt.get('date_time')}, Expert={appt.get('expert_id')}, Status={appt.get('status')}")
         
         # 3. Aktif Uzmanları Çek
         # Eğer belirli bir uzman isteniyorsa sadece onu, yoksa hepsini çek
@@ -304,9 +355,12 @@ class AppointmentRepository(BaseDirectusRepository):
                     appt_start = datetime.fromisoformat(appt['date_time'].replace('Z', '+00:00')).replace(tzinfo=None)
                     appt_end = datetime.fromisoformat(appt['end_date'].replace('Z', '+00:00')).replace(tzinfo=None)
                     
+                    logging.debug(f"[find_available_slots_for_day] Çakışma kontrol: Slot({potential_slot}-{slot_end}) vs Appt({appt_start}-{appt_end})")
+                    
                     # (StartA < EndB) and (EndA > StartB)
                     if (potential_slot < appt_end) and (slot_end > appt_start):
                         is_taken = True
+                        logging.info(f"[find_available_slots_for_day] ❌ Çakışma! {exp_full_name} saat {potential_slot.strftime('%H:%M')} DOLU")
                         break
                 
                 if not is_taken:

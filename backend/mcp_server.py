@@ -46,9 +46,15 @@ def _directus_get(collection: str, params: Dict = None) -> List[Dict]:
         "Content-Type": "application/json"
     }
     try:
+        logging.info(f"CMS GET Request: {url}")
+        logging.info(f"CMS GET Params: {params}")
         response = requests.get(url, headers=headers, params=params)
+        logging.info(f"CMS Response Status: {response.status_code}")
+        logging.info(f"CMS Response: {response.text[:500]}")  # İlk 500 karakter
         if response.status_code == 200:
-            return response.json().get('data', [])
+            data = response.json().get('data', [])
+            logging.info(f"CMS Data Count: {len(data)}")
+            return data
         logging.error(f"CMS GET Error ({collection}): {response.text}")
         return []
     except Exception as e:
@@ -91,47 +97,115 @@ def get_all_services_from_cms() -> List[Dict]:
     }
     return _directus_get("voises_services", params)
 
+def normalize_turkish(text: str) -> str:
+    """Türkçe karakterleri ASCII'ye çevir ve fazla boşlukları temizle (fuzzy matching için)."""
+    if not text:
+        return ""
+    tr_map = {
+        'ı': 'i', 'İ': 'I', 'ğ': 'g', 'Ğ': 'G',
+        'ü': 'u', 'Ü': 'U', 'ş': 's', 'Ş': 'S',
+        'ö': 'o', 'Ö': 'O', 'ç': 'c', 'Ç': 'C'
+    }
+    for tr_char, en_char in tr_map.items():
+        text = text.replace(tr_char, en_char)
+    # Fazla boşlukları tek boşluğa indir ve baş/sondaki boşlukları temizle
+    import re
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 def get_all_experts_from_cms(service_name: Optional[str] = None) -> List[Dict]:
     """Uzmanları çeker. Opsiyonel olarak hizmete göre filtreler."""
-    # Uzmanları ve ilişkili hizmetlerini çek
+    # Directus boolean ve tenant_id filtreleri
     params = {
-        "filter[is_active][_eq]": True,
-        "filter[tenant_id][_eq]": settings.TENANT_ID,
-        "fields": "*,services.voises_services_id.name" # İlişkili hizmet isimlerini al
+        "fields": "*,services.voises_services_id.*"
     }
     
-    if service_name:
-        # Directus'ta derin filtreleme (Deep Filtering)
-        # Uzmanın hizmetleri arasında ismi X olan var mı?
-        params["filter[services][voises_services_id][name][_icontains]"] = service_name
+    # Tenant_id filtresi ekle (1 olan uzmanları getir)
+    if settings.TENANT_ID:
+        params["filter[tenant_id][_eq]"] = settings.TENANT_ID
 
+    logging.info(f"[get_all_experts_from_cms] Params: {params}")
     experts_data = _directus_get("voises_experts", params)
+    logging.info(f"[get_all_experts_from_cms] Raw data count: {len(experts_data)}")
     
     formatted_experts = []
     for exp in experts_data:
+        logging.info(f"[get_all_experts_from_cms] Processing expert: {exp}")
+        
         # İlişkili hizmetleri listeye çevir
         specialties = []
-        if 'services' in exp and exp['services']:
+        if 'services' in exp and exp['services'] and isinstance(exp['services'], list):
             for s in exp['services']:
-                if s.get('voises_services_id'):
-                    specialties.append(s['voises_services_id']['name'])
+                if isinstance(s, dict) and s.get('voises_services_id'):
+                    service_data = s['voises_services_id']
+                    if isinstance(service_data, dict) and 'name' in service_data:
+                        specialties.append(service_data['name'])
         
-        formatted_experts.append({
-            "full_name": f"{exp.get('first_name', '')} {exp.get('last_name', '')}".strip(),
+        expert_info = {
+            "name": f"{exp.get('first_name', '')} {exp.get('last_name', '')}".strip(),
             "specialties": specialties,
             "id": exp.get('id')
-        })
+        }
+        
+        # Eğer belirli bir hizmet isteniyorsa, filtrele
+        if service_name:
+            if any(service_name.lower() in s.lower() for s in specialties):
+                formatted_experts.append(expert_info)
+        else:
+            formatted_experts.append(expert_info)
+    
+    logging.info(f"[get_all_experts_from_cms] Formatted experts count: {len(formatted_experts)}")
     return formatted_experts
 
 def get_active_campaigns_from_cms() -> List[Dict]:
     """Aktif kampanyaları çeker."""
-    now = datetime.utcnow().isoformat()
-    params = {
-        "filter[start_date][_lte]": now,
-        "filter[end_date][_gte]": now,
-        "filter[tenant_id][_eq]": settings.TENANT_ID
-    }
-    return _directus_get("voises_campaigns", params)
+    now = datetime.utcnow()
+    
+    # Önce tüm kampanyaları çek, sonra Python'da filtrele
+    params = {"filter[tenant_id][_eq]": settings.TENANT_ID}
+    logging.info(f"[get_active_campaigns_from_cms] Şu anki tarih: {now.isoformat()}")
+    
+    all_campaigns = _directus_get("voises_campaigns", params)
+    logging.info(f"[get_active_campaigns_from_cms] Toplam kampanya sayısı: {len(all_campaigns)}")
+    
+    active_campaigns = []
+    for c in all_campaigns:
+        start_date_str = c.get('start_date')
+        end_date_str = c.get('end_date')
+        
+        logging.info(f"[get_active_campaigns_from_cms] Kampanya: {c.get('name')} | Start: {start_date_str} | End: {end_date_str}")
+        
+        try:
+            # Directus'tan gelen tarih formatını parse et
+            if start_date_str and end_date_str:
+                start_date = None
+                end_date = None
+                
+                # ISO format dene
+                try:
+                    start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00').replace('+00:00', ''))
+                    end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00').replace('+00:00', ''))
+                except:
+                    # YYYY-MM-DD formatı dene
+                    try:
+                        start_date = datetime.strptime(start_date_str.split('T')[0], '%Y-%m-%d')
+                        end_date = datetime.strptime(end_date_str.split('T')[0], '%Y-%m-%d')
+                    except:
+                        logging.warning(f"[get_active_campaigns_from_cms] Tarih parse edilemedi: {start_date_str}, {end_date_str}")
+                        continue
+                
+                # Kampanya aktif mi kontrol et
+                if start_date and end_date and start_date <= now <= end_date:
+                    active_campaigns.append(c)
+                    logging.info(f"[get_active_campaigns_from_cms] ✅ Aktif kampanya: {c.get('name')}")
+                else:
+                    logging.info(f"[get_active_campaigns_from_cms] ❌ Tarih dışı: {c.get('name')} (Now: {now}, Start: {start_date}, End: {end_date})")
+        except Exception as e:
+            logging.error(f"[get_active_campaigns_from_cms] Tarih parse hatası: {e}")
+            continue
+    
+    logging.info(f"[get_active_campaigns_from_cms] Aktif kampanya sayısı: {len(active_campaigns)}")
+    return active_campaigns
 
 
 # --------------------------------------------------------------------------
@@ -189,13 +263,25 @@ def check_availability(
         
         duration = service_info['duration']
 
+        # 1.5. Türkçe karakter normalizasyonu ile uzman eşleştirme
+        normalized_expert_name = None
+        if expert_name:
+            experts = get_all_experts_from_cms()
+            normalized_input = normalize_turkish(expert_name.lower())
+            for e in experts:
+                normalized_expert = normalize_turkish(e['name'].lower())
+                if normalized_input in normalized_expert or normalized_expert in normalized_input:
+                    normalized_expert_name = e['name']
+                    logging.info(f"🔍 Uzman eşleşti: '{expert_name}' -> '{normalized_expert_name}'")
+                    break
+
         # 2. Müsaitlik kontrolü (Repository üzerinden)
         appointment_repo = AppointmentRepository()
         slots_with_experts = appointment_repo.find_available_slots_for_day(
             service_type=service_type,
             day=requested_time.date(),
             duration_minutes=duration,
-            expert_name=expert_name
+            expert_name=normalized_expert_name
         )
 
         if not slots_with_experts:
@@ -294,6 +380,63 @@ def check_customer(phone: str) -> Dict:
 
 mcp.tool(check_customer)
 
+def get_customer_appointments(phone: str) -> Dict:
+    """
+    Telefon numarasına göre müşterinin mevcut randevularını listeler.
+    """
+    try:
+        customer_repo = CustomerRepository()
+        
+        # Müşteri kontrolü
+        customer = customer_repo.get_by_phone(phone)
+        if not customer:
+            return {"success": False, "error": "Bu telefon numarasına kayıtlı müşteri bulunamadı."}
+        
+        # DirectusItem'dan müşteri adını al (doğrudan attribute erişimi)
+        customer_name = f"{getattr(customer, 'first_name', '')} {getattr(customer, 'last_name', '')}".strip()
+        
+        # Randevuları getir (sadece aktif olanlar)
+        appointments = customer_repo.get_appointments(customer.id, limit=10, include_cancelled=False)
+        
+        if not appointments:
+            return {
+                "success": True,
+                "customer_name": customer_name,
+                "appointments": [],
+                "message": "Kayıtlı randevunuz bulunmamaktadır."
+            }
+        
+        # Randevu bilgilerini formatla (DirectusItem doğrudan attribute erişimi)
+        formatted_appointments = []
+        for apt in appointments:
+            # date_time datetime objesi olabilir, string'e çevir
+            date_time = getattr(apt, 'date_time', None)
+            if date_time and hasattr(date_time, 'strftime'):
+                date_str = date_time.strftime('%Y-%m-%d %H:%M')
+            else:
+                date_str = str(date_time) if date_time else ''
+            
+            formatted_appointments.append({
+                "id": getattr(apt, 'id', None),
+                "date": date_str,
+                "service": getattr(apt, 'service_type', ''),
+                "expert": getattr(apt, 'expert_name', ''),
+                "status": getattr(apt, 'status', ''),
+                "notes": getattr(apt, 'notes', '')
+            })
+        
+        return {
+            "success": True,
+            "customer_name": customer_name,
+            "appointments": formatted_appointments,
+            "count": len(formatted_appointments)
+        }
+    except Exception as e:
+        logging.error(f"get_customer_appointments error: {e}", exc_info=True)
+        return {"success": False, "error": f"Randevu sorgulanırken hata: {str(e)}"}
+
+mcp.tool(get_customer_appointments)
+
 def create_appointment(
     customer_phone: str, 
     service_type: str, 
@@ -337,16 +480,26 @@ def create_appointment(
         
         if expert_name:
             # Belirtilen uzmanı kontrol et (ID'sini bulmamız lazım)
-            # AppointmentRepository içinde _get_expert_id_by_name var ama private.
-            # CMS Helper ile ID bulalım:
             experts = get_all_experts_from_cms()
-            target_expert = next((e for e in experts if expert_name.lower() in e['full_name'].lower()), None)
+            
+            # 🔧 FIX: Türkçe karakter normalizasyonu ile fuzzy matching
+            normalized_input = normalize_turkish(expert_name.lower())
+            target_expert = None
+            
+            for e in experts:
+                normalized_expert = normalize_turkish(e['name'].lower())
+                # Çift yönlü eşleştirme
+                if normalized_input in normalized_expert or normalized_expert in normalized_input:
+                    target_expert = e
+                    break
+            
+            logging.info(f"🔍 Uzman arama: '{expert_name}' -> normalized: '{normalized_input}' -> Found: {target_expert}")
             
             if not target_expert:
-                 return {"success": False, "error": "Belirtilen uzman bulunamadı."}
+                 return {"success": False, "error": f"Belirtilen uzman bulunamadı. Mevcut uzmanlar: {[e['name'] for e in experts]}"}
 
             if appointment_repo.check_availability(target_expert['id'], appointment_time, duration):
-                assigned_expert = target_expert['full_name']
+                assigned_expert = target_expert['name']
             else:
                 return {"success": False, "error": f"{expert_name} seçilen saatte müsait değil."}
         else:
@@ -365,11 +518,12 @@ def create_appointment(
             if not available_experts:
                 return {"success": False, "error": "Uygun saatte müsait uzman yok."}
             
+            # 🔧 FIX: 'full_name' -> 'name'
             if len(available_experts) > 1:
                 # Birden fazla varsa kullanıcıya sor veya ilkini seç (Şimdilik ilkini seçiyoruz)
-                assigned_expert = available_experts[0]['full_name']
+                assigned_expert = available_experts[0]['name']
             else:
-                assigned_expert = available_experts[0]['full_name']
+                assigned_expert = available_experts[0]['name']
 
         # 5. Randevuyu Kaydet
         try:
@@ -384,6 +538,7 @@ def create_appointment(
                 "success": True,
                 "message": f"Randevunuz {assigned_expert} ile oluşturuldu.",
                 "appointment": {
+                    "code": getattr(appointment, 'appointment_code', 'N/A'),
                     "customer": f"{customer.first_name} {customer.last_name}",
                     "expert": assigned_expert,
                     "service": service_type,
@@ -422,45 +577,86 @@ def create_new_customer(full_name: str, phone: str) -> Dict:
 
 mcp.tool(create_new_customer)
 
-def cancel_appointment(appointment_code: str, reason: str = "Müşteri talebi") -> Dict:
+def cancel_appointment(
+    appointment_code: Optional[str] = None, 
+    phone: Optional[str] = None,
+    reason: str = "Müşteri talebi"
+) -> Dict:
     """
     Randevu iptal eder. 
-    Not: CMS şemasında appointment_code yoktu, ID veya Notes içindeki kod kullanılmalı.
-    Burada kodun ID olduğunu veya Notes içinde arandığını varsayıyoruz.
+    - appointment_code: Randevu ID'si veya kodu
+    - phone: Telefon numarası (varsa en son randevuyu iptal eder)
+    En az biri gerekli.
     """
     try:
         repo = AppointmentRepository()
-        # Not: Repository'deki cancel metodu ID bekliyor olabilir, 
-        # ancak kodda repository'yi ID ile çalışacak şekilde güncellemiştik.
-        # Eğer appointment_code bir ID ise (int):
-        try:
-            appt_id = int(appointment_code)
-            cancelled = repo.cancel(appt_id, reason)
-        except ValueError:
-            # Eğer kod ise (String), repository'de get_by_code mantığına ihtiyaç var.
-            # Şimdilik hata dönüyoruz veya repository'nin bunu hallettiğini varsayıyoruz.
-            return {"success": False, "error": "Lütfen randevu ID'sini belirtin."}
-
+        customer_repo = CustomerRepository()
+        appt_id = None
+        
+        # 1. Önce appointment_code ile dene
+        if appointment_code:
+            try:
+                appt_id = int(appointment_code)
+            except ValueError:
+                # Kod string ise, notes içinde arayabiliriz (opsiyonel)
+                pass
+        
+        # 2. Telefon numarasıyla randevu bul
+        if not appt_id and phone:
+            customer = customer_repo.get_by_phone(phone)
+            if customer:
+                appointments = customer_repo.get_appointments(customer.id, limit=1, include_cancelled=False)
+                if appointments:
+                    appt_id = getattr(appointments[0], 'id', None)
+        
+        if not appt_id:
+            return {"success": False, "error": "İptal edilecek randevu bulunamadı."}
+        
+        cancelled = repo.cancel(appt_id, reason)
+        
         if cancelled:
-            return {"success": True, "message": "Randevu iptal edildi."}
-        return {"success": False, "error": "Randevu bulunamadı."}
+            return {"success": True, "message": "Randevunuz başarıyla iptal edildi."}
+        return {"success": False, "error": "Randevu iptal edilemedi."}
     except Exception as e:
+        logging.error(f"cancel_appointment error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 mcp.tool(cancel_appointment)
 
-def check_campaigns(customer_phone: str) -> Dict:
+def check_campaigns(customer_phone: Optional[str] = None) -> Dict:
     """Aktif kampanyaları listeler."""
     try:
+        # Aktif kampanyaları çek
         campaigns = get_active_campaigns_from_cms()
+        
         if not campaigns:
              return {"success": True, "campaigns": [], "message": "Şu an aktif kampanya yok."}
         
-        # Kampanya detaylarını formatla
-        formatted = [{"name": c['name'], "code": c.get('code'), "discount": c.get('discount_rate')} for c in campaigns]
+        # Kampanya detaylarını formatla (bitiş tarihini de ekle)
+        formatted = []
+        for c in campaigns:
+            end_date_str = c.get('end_date', '')
+            # Tarihi daha okunabilir formata çevir
+            try:
+                if end_date_str:
+                    end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00').replace('+00:00', ''))
+                    end_date_formatted = end_date.strftime('%d.%m.%Y')
+                else:
+                    end_date_formatted = None
+            except:
+                end_date_formatted = None
+            
+            formatted.append({
+                "name": c['name'], 
+                "code": c.get('code'), 
+                "discount": c.get('discount_rate'),
+                "description": c.get('description', ''),
+                "end_date": end_date_formatted
+            })
         
         return {"success": True, "campaigns": formatted}
     except Exception as e:
+        logging.error(f"[check_campaigns] Hata: {str(e)}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 mcp.tool(check_campaigns)
@@ -479,6 +675,92 @@ def list_experts(service_type: Optional[str] = None) -> Dict:
     return {"success": True, "experts": experts}
 
 mcp.tool(list_experts)
+
+def suggest_alternative_times(service_type: str, date: str, expert_name: Optional[str] = None) -> Dict:
+    """Alternatif randevu zamanları önerir."""
+    try:
+        service_info = get_service_details(service_type)
+        if not service_info:
+            return {"success": False, "error": "Hizmet bulunamadı."}
+        
+        duration = service_info['duration']
+        
+        try:
+            requested_date = datetime.fromisoformat(date.replace('Z', '+00:00'))
+        except ValueError:
+            try:
+                requested_date = datetime.strptime(date, '%Y-%m-%d')
+            except ValueError:
+                return {"success": False, "error": "Geçersiz tarih formatı."}
+        
+        # Türkçe karakter normalizasyonu ile uzman eşleştirme
+        normalized_expert_name = None
+        if expert_name:
+            experts = get_all_experts_from_cms()
+            normalized_input = normalize_turkish(expert_name.lower())
+            for e in experts:
+                normalized_expert = normalize_turkish(e['name'].lower())
+                if normalized_input in normalized_expert or normalized_expert in normalized_input:
+                    normalized_expert_name = e['name']
+                    logging.info(f"🔍 [suggest_alternative] Uzman eşleşti: '{expert_name}' -> '{normalized_expert_name}'")
+                    break
+        
+        appointment_repo = AppointmentRepository()
+        
+        same_day_slots = appointment_repo.find_available_slots_for_day(
+            service_type=service_type,
+            day=requested_date.date(),
+            duration_minutes=duration,
+            expert_name=normalized_expert_name
+        )
+        
+        alternatives = []
+        
+        if same_day_slots:
+            for slot, expert in same_day_slots[:3]:
+                alternatives.append({
+                    "date": slot.strftime("%d.%m.%Y"),
+                    "time": slot.strftime("%H:%M"),
+                    "expert": expert,
+                    "day_type": "aynı gün"
+                })
+        
+        for i in range(1, 4):
+            next_day = requested_date + timedelta(days=i)
+            next_day_slots = appointment_repo.find_available_slots_for_day(
+                service_type=service_type,
+                day=next_day.date(),
+                duration_minutes=duration,
+                expert_name=normalized_expert_name
+            )
+            
+            if next_day_slots:
+                for slot, expert in next_day_slots[:2]:
+                    alternatives.append({
+                        "date": slot.strftime("%d.%m.%Y"),
+                        "time": slot.strftime("%H:%M"),
+                        "expert": expert,
+                        "day_type": f"{i} gün sonra"
+                    })
+        
+        if not alternatives:
+            return {
+                "success": True,
+                "alternatives": [],
+                "message": "Yakın tarihlerde uygun saat bulunamadı."
+            }
+        
+        return {
+            "success": True,
+            "alternatives": alternatives[:10],
+            "message": f"{len(alternatives[:10])} alternatif saat bulundu."
+        }
+        
+    except Exception as e:
+        logging.error(f"suggest_alternative_times hatası: {str(e)}")
+        return {"success": False, "error": f"Sistem hatası: {str(e)}"}
+
+mcp.tool(suggest_alternative_times)
 
 # --------------------------------------------------------------------------
 # MCP Mount & Pydantic Models
@@ -501,6 +783,25 @@ class CreateAppointmentRequest(BaseModel):
     customer_name: Optional[str] = None
     expert_name: Optional[str] = None
 
+class CancelAppointmentRequest(BaseModel):
+    appointment_code: str
+    reason: Optional[str] = "Müşteri talebi"
+
+class CreateCustomerRequest(BaseModel):
+    full_name: str
+    phone: str
+
+class CheckCustomerRequest(BaseModel):
+    phone: str
+
+class CheckCampaignsRequest(BaseModel):
+    customer_phone: str
+
+class SuggestAlternativesRequest(BaseModel):
+    service_type: str
+    date: str
+    expert_name: Optional[str] = None
+
 # API Endpointleri
 @app.post("/api/check_availability")
 async def api_check_availability(request: CheckAvailabilityRequest):
@@ -517,6 +818,112 @@ async def api_list_services():
 @app.get("/api/list_experts")
 async def api_list_experts():
     return list_experts()
+
+@app.post("/api/cancel_appointment")
+async def api_cancel_appointment(request: CancelAppointmentRequest):
+    return cancel_appointment(request.appointment_code, request.reason)
+
+@app.post("/api/create_customer")
+async def api_create_customer(request: CreateCustomerRequest):
+    return create_new_customer(request.full_name, request.phone)
+
+@app.post("/api/check_customer")
+async def api_check_customer(request: CheckCustomerRequest):
+    return check_customer(request.phone)
+
+@app.post("/api/check_campaigns")
+async def api_check_campaigns(request: CheckCampaignsRequest):
+    return check_campaigns(request.customer_phone)
+
+@app.post("/api/suggest_alternatives")
+async def api_suggest_alternatives(request: SuggestAlternativesRequest):
+    """Alternatif randevu zamanları önerir."""
+    try:
+        # Hizmet süresini al
+        service_info = get_service_details(request.service_type)
+        if not service_info:
+            return {"success": False, "error": "Hizmet bulunamadı."}
+        
+        duration = service_info['duration']
+        
+        # Tarihi parse et
+        try:
+            requested_date = datetime.fromisoformat(request.date.replace('Z', '+00:00'))
+        except ValueError:
+            try:
+                requested_date = datetime.strptime(request.date, '%Y-%m-%d')
+            except ValueError:
+                return {"success": False, "error": "Geçersiz tarih formatı."}
+        
+        # Türkçe karakter normalizasyonu ile uzman eşleştirme
+        normalized_expert_name = None
+        if request.expert_name:
+            experts = get_all_experts_from_cms()
+            normalized_input = normalize_turkish(request.expert_name.lower())
+            for e in experts:
+                normalized_expert = normalize_turkish(e['name'].lower())
+                if normalized_input in normalized_expert or normalized_expert in normalized_input:
+                    normalized_expert_name = e['name']
+                    logging.info(f"🔍 [api_suggest] Uzman eşleşti: '{request.expert_name}' -> '{normalized_expert_name}'")
+                    break
+        
+        appointment_repo = AppointmentRepository()
+        
+        # Önce aynı gün için alternatif saatler bul
+        same_day_slots = appointment_repo.find_available_slots_for_day(
+            service_type=request.service_type,
+            day=requested_date.date(),
+            duration_minutes=duration,
+            expert_name=normalized_expert_name
+        )
+        
+        alternatives = []
+        
+        # Aynı gün alternatifleri ekle
+        if same_day_slots:
+            for slot, expert in same_day_slots[:3]:  # İlk 3 slot
+                alternatives.append({
+                    "date": slot.strftime("%d.%m.%Y"),
+                    "time": slot.strftime("%H:%M"),
+                    "expert": expert,
+                    "day_type": "aynı gün"
+                })
+        
+        # Sonraki 3 gün için de kontrol et
+        for i in range(1, 4):
+            next_day = requested_date + timedelta(days=i)
+            next_day_slots = appointment_repo.find_available_slots_for_day(
+                service_type=request.service_type,
+                day=next_day.date(),
+                duration_minutes=duration,
+                expert_name=normalized_expert_name
+            )
+            
+            if next_day_slots:
+                for slot, expert in next_day_slots[:2]:  # Her günden 2 slot
+                    alternatives.append({
+                        "date": slot.strftime("%d.%m.%Y"),
+                        "time": slot.strftime("%H:%M"),
+                        "expert": expert,
+                        "day_type": f"{i} gün sonra"
+                    })
+        
+        if not alternatives:
+            return {
+                "success": True,
+                "alternatives": [],
+                "message": "Yakın tarihlerde uygun saat bulunamadı."
+            }
+        
+        return {
+            "success": True,
+            "alternatives": alternatives[:10],  # Maksimum 10 alternatif
+            "message": f"{len(alternatives[:10])} alternatif saat bulundu."
+        }
+        
+    except Exception as e:
+        logging.error(f"suggest_alternatives hatası: {str(e)}")
+        return {"success": False, "error": f"Sistem hatası: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

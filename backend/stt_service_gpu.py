@@ -186,7 +186,7 @@ class GPUWhisperSTT:
                 repetition_penalty=1.1, # Tekrar eden kelimeleri hafifçe engelleyip
                 vad_filter=True,        # Sessiz kısımları atla
                 vad_parameters=dict(
-                    min_silence_duration_ms=700,  # Cümle sonunu daha iyi yakala
+                    min_silence_duration_ms=200,  # Cümle sonunu daha iyi yakala
                     threshold=0.5,
                     min_speech_duration_ms=250
                 ),

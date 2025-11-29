@@ -15,6 +15,7 @@ class CustomerAgent(BaseAgent):
             capabilities=[
                 "check_customer", 
                 "create_customer", 
+                "get_customer_appointments",
                 "analyze_customer",
                 "get_customer_insights"
             ]
@@ -31,6 +32,8 @@ class CustomerAgent(BaseAgent):
             return await self._check_customer(params, conversation)
         elif task_type == "create_customer":
             return await self._create_customer(params, conversation)
+        elif task_type == "get_customer_appointments":
+            return await self._get_customer_appointments(params, conversation)
         elif task_type == "analyze_customer":
             return await self._analyze_customer_behavior(params, conversation)
         elif task_type == "get_customer_insights":
@@ -57,6 +60,32 @@ class CustomerAgent(BaseAgent):
             )
             
             return mcp_result
+        except asyncio.TimeoutError:
+            logging.error(f"[{self.name}] Müşteri kontrolü timeout!")
+            return {"success": False, "error": "Müşteri kontrolü zaman aşımına uğradı."}
+        except Exception as e:
+            logging.error(f"[{self.name}] Müşteri kontrolü hatası: {e}", exc_info=True)
+            return {"success": False, "error": f"Müşteri kontrolü sırasında hata: {str(e)}"}
+    
+    async def _get_customer_appointments(self, params: Dict, conversation: Dict) -> Dict:
+        """Müşterinin mevcut randevularını getir - TIMEOUT korumalı."""
+        
+        # Telefon numarasını parametrelerden veya konuşma hafızasından al
+        phone = params.get("phone") or conversation.get("collected", {}).get("phone")
+        if not phone:
+            return {"success": False, "error": "Randevu sorgulamak için telefon numarası gerekli."}
+        
+        try:
+            mcp_params = {"phone": phone}
+            
+            # TIMEOUT: 5 saniye içinde cevap gelmezse iptal et
+            import asyncio
+            mcp_result = await asyncio.wait_for(
+                self.call_mcp_tool("get_customer_appointments", mcp_params),
+                timeout=5.0
+            )
+            
+            return mcp_result
             
         except asyncio.TimeoutError:
             logging.error(f"[{self.name}] Database timeout - müşteri sorgusu 5 saniyede tamamlanamadı")
@@ -66,14 +95,8 @@ class CustomerAgent(BaseAgent):
                 "timeout": True
             }
         except Exception as e:
-            logging.error(f"[{self.name}] Müşteri kontrolü hatası: {e}")
+            logging.error(f"[{self.name}] Randevu sorgulama hatası: {e}")
             return {"success": False, "error": str(e)}
-        
-        if mcp_result.get("success"):
-            customer_name = mcp_result.get("customer", {}).get("name", "Bilinmiyor")
-            self.add_to_memory(f"Müşteri bulundu: {customer_name}")
-            
-        return mcp_result
     
     async def _create_customer(self, params: Dict, conversation: Dict) -> Dict:
         """Yeni müşteri oluştur - MCP tool."""
@@ -167,3 +190,4 @@ Analiz et ve JSON formatında döndür:
         """Müşteri için özel bilgiler oluştur."""
         # Bu metod, 'analyze_customer_behavior' metoduna benzer şekilde implemente edilebilir.
         return await self._analyze_customer_behavior(params, conversation)
+
