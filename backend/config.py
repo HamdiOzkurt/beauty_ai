@@ -38,9 +38,9 @@ class Settings:
     SMS_SENDER: str = "GuzellikMerkezi"
     
     # Randevu Ayarları (Varsayılanlar - CMS'den de çekilebilir ama fallback olarak kalsın)
-    BUSINESS_HOURS_START: int = 8
-    BUSINESS_HOURS_END: int = 17
-    APPOINTMENT_SLOT_MINUTES: int = 15
+    BUSINESS_HOURS_START: int = 9   # 09:00
+    BUSINESS_HOURS_END: int = 19    # 19:00
+    APPOINTMENT_SLOT_MINUTES: int = 30  # 30 dakikalık slotlar (makul aralık)
     REMINDER_HOURS_BEFORE: int = 24
     
     # Agent Ayarları

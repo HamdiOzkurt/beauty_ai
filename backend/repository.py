@@ -79,10 +79,30 @@ class ServiceRepository(BaseDirectusRepository):
 
 class CustomerRepository(BaseDirectusRepository):
     """voises_customers tablosu işlemleri"""
+    
+    @staticmethod
+    def normalize_phone(phone: str) -> str:
+        """Telefon numarasını +90 ile başlayan formata çevirir"""
+        # Boşlukları ve özel karakterleri temizle
+        phone = phone.strip().replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+        
+        # +90 ile başlıyorsa olduğu gibi döndür
+        if phone.startswith('+90'):
+            return phone
+        
+        # 0 ile başlıyorsa 0'ı kaldır ve +90 ekle
+        if phone.startswith('0'):
+            return '+90' + phone[1:]
+        
+        # Hiçbiri değilse direkt +90 ekle (5057142752 gibi)
+        return '+90' + phone
 
     def get_by_phone(self, phone: str) -> Optional[DirectusItem]:
+        # Telefon numarasını normalize et
+        normalized_phone = self.normalize_phone(phone)
+        
         params = {
-            "filter[_and][0][phone_number][_eq]": phone,
+            "filter[_and][0][phone_number][_eq]": normalized_phone,
             "filter[_and][1][tenant_id][_eq]": CURRENT_TENANT_ID,
             "limit": 1
         }
@@ -99,13 +119,42 @@ class CustomerRepository(BaseDirectusRepository):
             "fields": "*.*" # İlişkili verileri de (uzman adı vs) çekmek için
         }
         
+        # ⚠️ FIX: Sadece confirmed (aktif) randevuları getir
+        # _neq kullanmak yerine, pozitif olarak confirmed olanları filtrele
         if not include_cancelled:
-            params["filter[_and][2][status][_neq]"] = "cancelled"
+            params["filter[_and][2][status][_eq]"] = "confirmed"
+        
+        # 🔍 DEBUG: Sorgu parametrelerini logla
+        logging.info(f"[get_appointments] Customer ID: {customer_id}, Params: {params}")
 
         data = self._get("voises_appointments", params)
+        
+        # 🔍 DEBUG: Dönen veriyi logla
+        logging.info(f"[get_appointments] Dönen veri sayısı: {len(data)}")
+        if data:
+            logging.info(f"[get_appointments] İlk randevu örneği: {data[0]}")
+        else:
+            logging.warning(f"[get_appointments] ⚠️ Hiç randevu bulunamadı! Customer ID: {customer_id}")
+            # Tüm randevuları çek (status filtresi olmadan) debug için
+            debug_params = {
+                "filter[_and][0][customer_id][_eq]": customer_id,
+                "filter[_and][1][tenant_id][_eq]": CURRENT_TENANT_ID,
+                "sort": "-date_time",
+                "limit": limit,
+                "fields": "*.*"
+            }
+            all_data = self._get("voises_appointments", debug_params)
+            logging.info(f"[get_appointments] DEBUG - Status filtresi olmadan: {len(all_data)} randevu bulundu")
+            if all_data:
+                for apt in all_data:
+                    logging.info(f"[get_appointments] DEBUG - Randevu: ID={apt.get('id')}, Status={apt.get('status')}, Date={apt.get('date_time')}")
+        
         return [DirectusItem(**item) for item in data]
 
     def create(self, full_name: str, phone: str, email: str = None) -> DirectusItem:
+        # Telefon numarasını normalize et
+        normalized_phone = self.normalize_phone(phone)
+        
         # İsim soyisim ayırma (Basit mantık)
         parts = full_name.strip().split(' ', 1)
         first_name = parts[0]
@@ -115,7 +164,7 @@ class CustomerRepository(BaseDirectusRepository):
             "tenant_id": CURRENT_TENANT_ID,
             "first_name": first_name,
             "last_name": last_name,
-            "phone_number": phone,
+            "phone_number": normalized_phone,  # Normalize edilmiş telefon
             "created_date": datetime.now().replace(tzinfo=None).isoformat(),
             # Email alanı şemada yoktu ama varsa ekleyebilirsiniz: "email": email
         }
@@ -177,8 +226,10 @@ class AppointmentRepository(BaseDirectusRepository):
         # Python'da hem tarih hem status filtrele
         conflicts = []
         for appt in all_appointments:
-            status = appt.get('status')
+            status = appt.get('status', '').lower()  # 🔧 FIX: Küçük harfe çevir
+            # Aktif randevuları kontrol et (pending, confirmed, Pending, Confirmed hepsi)
             if status not in ['pending', 'confirmed']:
+                logging.debug(f"[check_availability] Randevu {appt.get('id')} atlandı (Status={appt.get('status')})")
                 continue
             
             try:
@@ -203,6 +254,37 @@ class AppointmentRepository(BaseDirectusRepository):
         
         logging.info(f"[check_availability] Toplam çakışma: {len(conflicts)}")
         return len(conflicts) == 0
+
+    def get_appointments_for_expert_and_time(
+        self,
+        expert_id: int,
+        start_time: datetime,
+        duration_minutes: int
+    ) -> List[Dict]:
+        """Belirli bir uzmanın belirli bir zamandaki randevularını döndürür."""
+        end_time = start_time + timedelta(minutes=duration_minutes)
+        
+        params = {
+            "filter[expert_id][_eq]": expert_id,
+            "filter[tenant_id][_eq]": CURRENT_TENANT_ID,
+            "filter[date_time][_lt]": end_time.isoformat(),
+            "filter[end_date][_gt]": start_time.isoformat(),
+            "fields": "id,date_time,end_date,status",
+            "limit": -1
+        }
+        
+        logging.info(f"[check_availability] Uzman ID: {expert_id}, Zaman: {start_time.isoformat()}, Parametreler: {params}")
+        
+        all_appointments = self._get("voises_appointments", params)
+        
+        # Status kontrolü - sadece pending ve confirmed olanları say
+        active_appointments = [
+            apt for apt in all_appointments 
+            if apt.get('status') in ['pending', 'confirmed']
+        ]
+        
+        logging.info(f"[check_availability] Bulunan çakışan randevu: {len(active_appointments)}")
+        return active_appointments
 
     def get_by_id(self, appointment_id: int) -> Optional[DirectusItem]:
         # Şemada 'appointment_code' yoktu, ID üzerinden gidiyoruz.
@@ -295,23 +377,27 @@ class AppointmentRepository(BaseDirectusRepository):
             "filter[date_time][_gte]": start_of_day.isoformat(),
             "filter[date_time][_lte]": end_of_day.isoformat(),
             "filter[tenant_id][_eq]": CURRENT_TENANT_ID,
-            "fields": "id,date_time,end_date,status,expert_id,expert_id.first_name,expert_id.last_name",
+            "fields": "id,date_time,end_date,status,expert_id.id,expert_id.first_name,expert_id.last_name",  # 🔧 FIX: expert_id.id eklendi
             "limit": -1
         }
         
         logging.info(f"[find_available_slots_for_day] Sorgu parametreleri: {params}")
         all_appointments = self._get("voises_appointments", params)
         
+        # 🔍 DEBUG: Raw data'yı logla
+        if all_appointments:
+            logging.info(f"[find_available_slots_for_day] ⚠️ RAW DATA SAMPLE: {all_appointments[0]}")
+        
         # Python tarafında status filtrele
         daily_appointments_data = [
             appt for appt in all_appointments 
-            if appt.get('status') in ['confirmed', 'pending']
+            if appt.get('status', '').lower() in ['confirmed', 'pending']  # 🔧 FIX: Küçük harfe çevir
         ]
         
         # DEBUG: Gelen randevuları logla
         logging.info(f"[find_available_slots_for_day] Tarih: {day}, Bulunan randevu sayısı: {len(daily_appointments_data)}")
         for appt in daily_appointments_data:
-            logging.info(f"[find_available_slots_for_day] Randevu: ID={appt.get('id')}, DateTime={appt.get('date_time')}, Expert={appt.get('expert_id')}, Status={appt.get('status')}")
+            logging.info(f"[find_available_slots_for_day] ⚠️ RANDEVU DETAYI: ID={appt.get('id')}, DateTime={appt.get('date_time')}, EndDate={appt.get('end_date')}, Expert={appt.get('expert_id')}, Status={appt.get('status')}")
         
         # 3. Aktif Uzmanları Çek
         # Eğer belirli bir uzman isteniyorsa sadece onu, yoksa hepsini çek
@@ -322,8 +408,10 @@ class AppointmentRepository(BaseDirectusRepository):
         if expert_name:
              parts = expert_name.split(' ', 1)
              expert_params["filter[_and][2][first_name][_icontains]"] = parts[0]
+             logging.info(f"[find_available_slots_for_day] 🔍 Sadece '{expert_name}' uzmanı için arama yapılıyor")
         
         experts_data = self._get("voises_experts", expert_params)
+        logging.info(f"[find_available_slots_for_day] Bulunan uzman sayısı: {len(experts_data)} (Filtre: {expert_name or 'Tüm uzmanlar'})")
         
         # --- Python Tarafında Hesaplama ---
         
@@ -345,7 +433,10 @@ class AppointmentRepository(BaseDirectusRepository):
                 for appt in daily_appointments_data:
                     # İlişkisel veri bazen obje, bazen sadece ID dönebilir, kontrol et:
                     appt_exp_id = appt.get('expert_id')
-                    if isinstance(appt_exp_id, dict): appt_exp_id = appt_exp_id.get('id')
+                    if isinstance(appt_exp_id, dict): 
+                        appt_exp_id = appt_exp_id.get('id')
+                    
+                    logging.debug(f"[find_available_slots_for_day] Karşılaştırma: Expert ID {exp_id} vs Appt Expert ID {appt_exp_id}")
                     
                     if appt_exp_id != exp_id:
                         continue
@@ -355,13 +446,15 @@ class AppointmentRepository(BaseDirectusRepository):
                     appt_start = datetime.fromisoformat(appt['date_time'].replace('Z', '+00:00')).replace(tzinfo=None)
                     appt_end = datetime.fromisoformat(appt['end_date'].replace('Z', '+00:00')).replace(tzinfo=None)
                     
-                    logging.debug(f"[find_available_slots_for_day] Çakışma kontrol: Slot({potential_slot}-{slot_end}) vs Appt({appt_start}-{appt_end})")
+                    logging.info(f"[find_available_slots_for_day] 🔍 Çakışma kontrol: Slot({potential_slot.strftime('%H:%M')}-{slot_end.strftime('%H:%M')}) vs Appt({appt_start.strftime('%H:%M')}-{appt_end.strftime('%H:%M')})")
                     
                     # (StartA < EndB) and (EndA > StartB)
                     if (potential_slot < appt_end) and (slot_end > appt_start):
                         is_taken = True
-                        logging.info(f"[find_available_slots_for_day] ❌ Çakışma! {exp_full_name} saat {potential_slot.strftime('%H:%M')} DOLU")
+                        logging.info(f"[find_available_slots_for_day] ❌ ÇAKIŞMA! {exp_full_name} saat {potential_slot.strftime('%H:%M')} DOLU (Randevu: {appt_start.strftime('%H:%M')}-{appt_end.strftime('%H:%M')})")
                         break
+                    else:
+                        logging.debug(f"[find_available_slots_for_day] ✅ Çakışma yok: {potential_slot.strftime('%H:%M')}")
                 
                 if not is_taken:
                     available_slots.append((potential_slot, exp_full_name))

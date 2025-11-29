@@ -102,8 +102,9 @@ class CustomerAgent(BaseAgent):
         """Yeni müşteri oluştur - MCP tool."""
         
         # Parametreleri hem görevden (Gemini'den gelen) hem de konuşma hafızasından alarak sistemi sağlamlaştırıyoruz.
-        full_name = params.get("full_name") or conversation.get("user_info", {}).get("full_name")
-        phone = params.get("phone") or conversation.get("user_info", {}).get("phone")
+        # ⚠️ FIX: user_info yerine collected state'inden al
+        full_name = params.get("full_name") or params.get("name") or conversation.get("collected", {}).get("name") or conversation.get("user_info", {}).get("full_name")
+        phone = params.get("phone") or conversation.get("collected", {}).get("phone") or conversation.get("user_info", {}).get("phone")
 
         # Eğer hala eksik bilgi varsa, hata döndür. Bu, MCP'ye boş istek gitmesini engeller.
         if not full_name or not phone:

@@ -167,10 +167,10 @@ async def process_audio_input(session_id: str, audio_data: bytes, websocket=None
                 "type": "transcript",
                 "text": user_text
             }))
-
-            # KÜÇÜK GECİKME: Kullanıcı mesajının frontend'de render olması için bekle
+            
+            # Frontend render süresi: Kullanıcı mesajı ekranda görünsün, sonra AI cevap gelsin
             import asyncio
-            await asyncio.sleep(0.3)  # 300ms - kullanıcı balonu göründükten sonra AI yanıtı gelsin
+            await asyncio.sleep(0.15)  # 150ms - optimize edilmiş (300ms → 150ms)
 
         return await process_text_input(session_id, user_text, websocket)
 

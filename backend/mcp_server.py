@@ -70,22 +70,32 @@ def get_service_details(service_name: str) -> Optional[Dict]:
     }
     data = _directus_get("voises_services", params)
     if data:
-        # duration_minute bazen int bazen string gelebilir, kontrol et
-        duration = data[0].get('duration_minute', 60)
-        if isinstance(duration, str):
-            # Eğer "01:00:00" gibi geliyorsa parse etmek gerekebilir, 
-            # ama şemada Datetime/Int karışıklığı olabilir. Varsayılan 60 dk.
+        # duration_minute bazen int, bazen time string (HH:MM:SS) gelebilir
+        duration_raw = data[0].get('duration_minute', 60)
+        duration = 60 # Default
+        
+        if isinstance(duration_raw, (int, float)):
+            duration = int(duration_raw)
+        elif isinstance(duration_raw, str):
+            # "01:25:00" formatındaysa parse et
             try:
-                # Basitçe int'e çevirmeyi dene veya varsayılanı kullan
-                duration = int(duration) 
+                time_parts = duration_raw.split(':')
+                if len(time_parts) >= 2:
+                    hours = int(time_parts[0])
+                    minutes = int(time_parts[1])
+                    duration = hours * 60 + minutes
+                else:
+                    duration = int(duration_raw)
             except:
-                duration = 60 
+                logging.warning(f"[get_service_details] Duration parse edilemedi: {duration_raw}, varsayılan 60 dk kullanılıyor")
+                duration = 60
         
         return {
             "id": data[0]['id'],
             "name": data[0]['name'],
             "duration": duration,
-            "description": data[0].get('description', '')
+            "description": data[0].get('description', ''),
+            "price": data[0].get('price')
         }
     return None
 
@@ -248,13 +258,55 @@ def check_availability(
 
         effective_date_str = date_time if date_time else date
         
+        logging.info(f"[check_availability] Gelen tarih: '{effective_date_str}' (type: {type(effective_date_str).__name__})")
+        
+        # Tarih parsing - çoklu format desteği
+        requested_time = None
+        current_year = datetime.now().year
+        
+        # ISO format dene
         try:
-            requested_time = datetime.fromisoformat(effective_date_str.replace('Z', '+00:00'))
-        except ValueError:
+            requested_time = datetime.fromisoformat(effective_date_str.replace('Z', '+00:00').replace('+00:00', ''))
+            logging.info(f"[check_availability] ISO parse başarılı: {requested_time}")
+        except:
+            pass
+        
+        # YYYY-MM-DD format dene  
+        if not requested_time:
             try:
                 requested_time = datetime.strptime(effective_date_str, '%Y-%m-%d')
-            except ValueError:
-                return {"success": False, "error": "Geçersiz tarih formatı."}
+                logging.info(f"[check_availability] YYYY-MM-DD parse başarılı: {requested_time}")
+            except:
+                pass
+        
+        # DD.MM.YYYY format dene
+        if not requested_time:
+            try:
+                requested_time = datetime.strptime(effective_date_str, '%d.%m.%Y')
+                logging.info(f"[check_availability] DD.MM.YYYY parse başarılı: {requested_time}")
+            except:
+                pass
+        
+        # "3 aralık" gibi Türkçe format dene
+        if not requested_time:
+            import re
+            tr_months = {
+                'ocak': 1, 'şubat': 2, 'mart': 3, 'nisan': 4, 'mayıs': 5, 'haziran': 6,
+                'temmuz': 7, 'ağustos': 8, 'eylül': 9, 'ekim': 10, 'kasım': 11, 'aralık': 12
+            }
+            pattern = r'(\d{1,2})\s*([a-züğışöç]+)'
+            match = re.search(pattern, effective_date_str.lower())
+            if match:
+                day = int(match.group(1))
+                month_name = match.group(2)
+                month = tr_months.get(month_name)
+                if month:
+                    requested_time = datetime(current_year, month, day)
+                    logging.info(f"[check_availability] Türkçe tarih parse başarılı: {requested_time}")
+        
+        if not requested_time:
+            logging.error(f"[check_availability] Hiçbir format çalışmadı: {effective_date_str}")
+            return {"success": False, "error": "Geçersiz tarih formatı."}
 
         # 1. Hizmet süresini CMS'den çek
         service_info = get_service_details(service_type)
@@ -265,22 +317,87 @@ def check_availability(
 
         # 1.5. Türkçe karakter normalizasyonu ile uzman eşleştirme
         normalized_expert_name = None
+        expert_id = None
         if expert_name:
             experts = get_all_experts_from_cms()
-            normalized_input = normalize_turkish(expert_name.lower())
+            normalized_input = normalize_turkish(expert_name.lower()).replace(' ', '')
+            logging.info(f"🔍 [check_availability] Uzman aranıyor: '{expert_name}' -> normalized: '{normalized_input}'")
             for e in experts:
-                normalized_expert = normalize_turkish(e['name'].lower())
+                normalized_expert = normalize_turkish(e['name'].lower()).replace(' ', '')
+                logging.info(f"🔍 [check_availability] Karşılaştırma: '{normalized_expert}' vs '{normalized_input}'")
+                # Boşluksuz eşleştirme + partial matching
                 if normalized_input in normalized_expert or normalized_expert in normalized_input:
                     normalized_expert_name = e['name']
-                    logging.info(f"🔍 Uzman eşleşti: '{expert_name}' -> '{normalized_expert_name}'")
+                    expert_id = e['id']
+                    logging.info(f"🔍 [check_availability] ✅ Uzman eşleşti: '{expert_name}' -> '{normalized_expert_name}' (ID: {expert_id})")
                     break
+            
+            if not normalized_expert_name:
+                expert_names = [e['name'] for e in experts]
+                logging.warning(f"[check_availability] Uzman bulunamadı: '{expert_name}'. Mevcut: {expert_names}")
+                return {"success": False, "error": f"Belirtilen uzman bulunamadı. Mevcut uzmanlar: {expert_names}"}
 
-        # 2. Müsaitlik kontrolü (Repository üzerinden)
+        # 2. Müsaitlik kontrolü - Önce belirli saat varsa kontrol et
         appointment_repo = AppointmentRepository()
+        
+        # 🔍 DEBUG: Gelen parametreleri logla
+        logging.info(f"[check_availability] ===== MÜSAİTLİK KONTROLÜ BAŞLADI =====")
+        logging.info(f"[check_availability] service_type: {service_type}")
+        logging.info(f"[check_availability] date_time param: {date_time}")
+        logging.info(f"[check_availability] date param: {date}")
+        logging.info(f"[check_availability] expert_name: {expert_name}")
+        logging.info(f"[check_availability] effective_date_str: {effective_date_str}")
+        logging.info(f"[check_availability] requested_time: {requested_time}")
+        logging.info(f"[check_availability] expert_id: {expert_id}")
+        logging.info(f"[check_availability] normalized_expert_name: {normalized_expert_name}")
+        
+        # Eğer belirli bir saat verilmişse (date_time ile VEYA date+time ayrı), o saat için kontrol et
+        has_specific_time = False
+        
+        # date_time parametresi varsa ve saat içeriyorsa
+        if date_time and ':' in str(effective_date_str):
+            has_specific_time = True
+            logging.info(f"[check_availability] ✓ Belirli saat tespit edildi (date_time)")
+        # VEYA date var ama requested_time'da saat bilgisi varsa (00:00'dan farklı)
+        elif requested_time and requested_time.hour != 0:
+            has_specific_time = True
+            logging.info(f"[check_availability] ✓ Belirli saat tespit edildi (hour={requested_time.hour})")
+        else:
+            logging.info(f"[check_availability] ⚠️ Belirli saat YOK - Tüm gün kontrolüne geçiliyor")
+        
+        if has_specific_time and expert_id:
+            logging.info(f"[check_availability] 🔎 Belirli saat kontrolü yapılıyor: {requested_time.strftime('%Y-%m-%d %H:%M')}")
+            # Uzmanın o saatte başka randevusu var mı kontrol et
+            is_available = appointment_repo.check_availability(
+                expert_id=expert_id,
+                start_time=requested_time,
+                duration_minutes=service_info['duration']
+            )
+            
+            logging.info(f"[check_availability] Müsaitlik sonucu: is_available={is_available}")
+            
+            if not is_available:
+                logging.info(f"[check_availability] ❌ MÜSAİT DEĞİL!")
+                return {
+                    "success": True,
+                    "available": False,
+                    "message": f"{normalized_expert_name} uzmanımızın {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde başka randevusu var. Alternatif saatler önerilsin mi?"
+                }
+            else:
+                logging.info(f"[check_availability] ✅ MÜSAİT!")
+                return {
+                    "success": True,
+                    "available": True,
+                    "message": f"{normalized_expert_name} uzmanımız {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde müsait.",
+                    "available_slots": {requested_time.strftime('%H:%M'): [normalized_expert_name]}
+                }
+        
+        # Tüm gün için müsaitlik kontrolü
+        logging.info(f"[check_availability] 📅 Tüm gün müsaitlik kontrolü yapılıyor...")
         slots_with_experts = appointment_repo.find_available_slots_for_day(
             service_type=service_type,
             day=requested_time.date(),
-            duration_minutes=duration,
+            duration_minutes=service_info['duration'],
             expert_name=normalized_expert_name
         )
 
@@ -462,10 +579,56 @@ def create_appointment(
             else:
                 return {"success": False, "error": "Müşteri bulunamadı. İsim bilgisi gerekli."}
 
-        # 2. Tarih Formatı
+        # 2. Tarih Formatı - çoklu format desteği
+        logging.info(f"[create_appointment] Gelen tarih: '{appointment_datetime}' (type: {type(appointment_datetime).__name__})")
+        
+        appointment_time = None
+        current_year = datetime.now().year
+        
+        # ISO format dene
         try:
-            appointment_time = datetime.fromisoformat(appointment_datetime.replace('Z', '+00:00'))
-        except ValueError:
+            appointment_time = datetime.fromisoformat(appointment_datetime.replace('Z', '+00:00').replace('+00:00', ''))
+            logging.info(f"[create_appointment] ISO parse başarılı: {appointment_time}")
+        except:
+            pass
+        
+        # YYYY-MM-DD HH:MM format dene
+        if not appointment_time:
+            try:
+                appointment_time = datetime.strptime(appointment_datetime, '%Y-%m-%d %H:%M')
+                logging.info(f"[create_appointment] YYYY-MM-DD HH:MM parse başarılı: {appointment_time}")
+            except:
+                pass
+        
+        # DD.MM.YYYY HH:MM format dene
+        if not appointment_time:
+            try:
+                appointment_time = datetime.strptime(appointment_datetime, '%d.%m.%Y %H:%M')
+                logging.info(f"[create_appointment] DD.MM.YYYY HH:MM parse başarılı: {appointment_time}")
+            except:
+                pass
+        
+        # "3 aralık 15:00" gibi Türkçe format dene
+        if not appointment_time:
+            import re
+            tr_months = {
+                'ocak': 1, 'şubat': 2, 'mart': 3, 'nisan': 4, 'mayıs': 5, 'haziran': 6,
+                'temmuz': 7, 'ağustos': 8, 'eylül': 9, 'ekim': 10, 'kasım': 11, 'aralık': 12
+            }
+            pattern = r'(\d{1,2})\s*([a-züğışöç]+)\s+(\d{1,2})[:.] (\d{2})'
+            match = re.search(pattern, appointment_datetime.lower())
+            if match:
+                day = int(match.group(1))
+                month_name = match.group(2)
+                hour = int(match.group(3))
+                minute = int(match.group(4))
+                month = tr_months.get(month_name)
+                if month:
+                    appointment_time = datetime(current_year, month, day, hour, minute)
+                    logging.info(f"[create_appointment] Türkçe tarih parse başarılı: {appointment_time}")
+        
+        if not appointment_time:
+            logging.error(f"[create_appointment] Tarih parse başarısız: {appointment_datetime}")
             return {"success": False, "error": "Geçersiz tarih formatı."}
 
         # 3. Hizmet Detaylarını Çek
@@ -482,13 +645,13 @@ def create_appointment(
             # Belirtilen uzmanı kontrol et (ID'sini bulmamız lazım)
             experts = get_all_experts_from_cms()
             
-            # 🔧 FIX: Türkçe karakter normalizasyonu ile fuzzy matching
-            normalized_input = normalize_turkish(expert_name.lower())
+            # 🔧 FIX: Türkçe karakter normalizasyonu + boşluk kaldırma
+            normalized_input = normalize_turkish(expert_name.lower()).replace(' ', '')
             target_expert = None
             
             for e in experts:
-                normalized_expert = normalize_turkish(e['name'].lower())
-                # Çift yönlü eşleştirme
+                normalized_expert = normalize_turkish(e['name'].lower()).replace(' ', '')
+                # Çift yönlü eşleştirme (boşluksuz)
                 if normalized_input in normalized_expert or normalized_expert in normalized_input:
                     target_expert = e
                     break

@@ -167,10 +167,27 @@ class AppointmentAgent(BaseAgent):
     
     async def _suggest_alternatives(self, params: Dict, conversation: Dict) -> Dict:
         """
-        Randevu dolu ise alternatif saatler öner.
+        Randevu dolu ise alternatif saatler öner - MCP aracını çağırır.
         """
-        # Evet, tam olarak burası da 'conversation' parametresini almalı.
-        # Böylece müşterinin geçmiş tercihlerine göre öneri yapabilirsiniz.
-        logging.info(f"[{self.name}] {conversation.get('user_info')} için alternatifler aranıyor.")
-        # TODO: Implement logic
-        return {"success": True, "message": "Alternatif zamanlar için geliştirme yapılacak."}
+        logging.info(f"[{self.name}] Alternatif saatler için MCP aracı çağrılıyor.")
+        
+        # Parametreleri conversation'dan tamamla
+        service_type = params.get("service_type") or conversation.get("collected", {}).get("service")
+        date = params.get("date") or conversation.get("collected", {}).get("date")
+        expert_name = params.get("expert_name") or conversation.get("collected", {}).get("expert_name")
+        
+        if not service_type or not date:
+            logging.error(f"[{self.name}] Alternatif önerisi için service_type ve date gerekli!")
+            return {"success": False, "error": "Alternatif saatler için hizmet ve tarih bilgisi gerekli."}
+        
+        mcp_params = {
+            "service_type": service_type,
+            "date": date,
+            "expert_name": expert_name
+        }
+        
+        # None değerleri temizle
+        mcp_params = {k: v for k, v in mcp_params.items() if v is not None}
+        
+        logging.info(f"[{self.name}] MCP parametreleri: {mcp_params}")
+        return await self.call_mcp_tool("suggest_alternative_times", mcp_params)

@@ -71,8 +71,9 @@ class OrchestratorAgent:
         info = {}
         msg_lower = user_message.lower()
         
-        # Telefon (Daha esnek - boşluklar ve tire ile)
-        phone_match = re.search(r'(?:0)?(5\d{2})[\s\-]?(\d{3})[\s\-]?(\d{2})[\s\-]?(\d{2})', user_message)
+        # Telefon (Daha esnek - boşluklar ve tire ile, başta sıfır olabilir)
+        # Format örnekleri: 05027225522, 0-502-722-5522, 0 502 722 55 22
+        phone_match = re.search(r'0?[\s\-]?(5\d{2})[\s\-]?(\d{3})[\s\-]?(\d{2,3})[\s\-]?(\d{2})', user_message)
         if phone_match:
             info["phone"] = f"0{phone_match.group(1)}{phone_match.group(2)}{phone_match.group(3)}{phone_match.group(4)}"
         
@@ -82,6 +83,12 @@ class OrchestratorAgent:
             hour = int(time_match.group(1))
             minute = int(time_match.group(2))
             info["time"] = f"{hour:02d}:{minute:02d}"
+        
+        # İsim (Türkçe isim formatı: İki kelime, her biri büyük harfle başlamalı)
+        # Örnek: "Osman Kara", "Ayşe Yılmaz"
+        name_match = re.search(r'\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)\s+([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)\b', user_message)
+        if name_match:
+            info["name"] = f"{name_match.group(1)} {name_match.group(2)}"
         
         # Hizmetler (Anahtar kelimeler - daha geniş pattern'lar)
         services = {
@@ -175,6 +182,11 @@ class OrchestratorAgent:
         
         state_display = "\n".join(state_summary) if state_summary else "(Henüz bilgi toplanmadı)"
         
+        # Müşteri ismi bilgisi (context'ten)
+        customer_greeting = ""
+        if context.get("customer_name"):
+            customer_greeting = f"\n### 👤 CUSTOMER INFO ###\nRegistered Customer Name: {context['customer_name']}\n**IMPORTANT:** Always address this customer by their name (e.g., 'Merhaba {context['customer_name']}' or '{context['customer_name']} Hanım/Bey'). Be warm and personal!\n"
+        
         # Kampanya bilgilerini prompt'a ekle
         campaign_info = ""
         if context.get("active_campaigns"):
@@ -187,94 +199,59 @@ class OrchestratorAgent:
 {chr(10).join(campaign_details)}
 """
 
-        # --- V3.1 PROMPT - Memory Enhanced ---
-        prompt = f"""### SYSTEM INSTRUCTION ###
-ROLE: Beauty Center AI Orchestrator.
-GOAL: Manage conversation, extract entities, select Agent Tools, and output strictly JSON.
-LANGUAGE: Instructions in English (Low Token). Output 'ask_user' in Turkish (Natural, warm, concise, NO emojis).
+        # --- V3.2 PROMPT - Refactored & Compact ---
+        prompt = f"""### ROLE & GOAL ###
+You are a Beauty Center AI Orchestrator. Your goal is to manage conversations, extract information, plan tool usage, and respond to the user.
+Your output MUST be a single JSON object. The 'ask_user' field must be in natural, warm, and concise Turkish.
 
-CURRENT DATE: {today.strftime('%Y-%m-%d %H:%M')}
-
-### ⚠️ ALREADY COLLECTED INFORMATION (DO NOT ASK AGAIN!) ###
-{state_display}
-
-RAW STATE JSON: {json.dumps(current_state, ensure_ascii=False)}
-{campaign_info}
-### CONVERSATION HISTORY ###
+### CORE DATA ###
+- Current Date: {today.strftime('%Y-%m-%d %H:%M')}
+- Knowledge Base: {self.knowledge_base_summary}
+- Conversation History:
 {history_text}
+{customer_greeting}
+- Active Campaigns:
+{campaign_info}
 
-### KNOWLEDGE BASE ###
-{self.knowledge_base_summary}
+### CURRENT STATE (MEMORY) ###
+- Summary: {state_display}
+- Raw JSON: {json.dumps(current_state, ensure_ascii=False)}
 
-AVAILABLE AGENTS & TOOLS:
-1. booking_agent: [create_appointment, cancel_appointment, check_availability, list_experts, list_services]
-2. customer_agent: [check_customer, create_customer, get_customer_appointments]
-3. marketing_agent: [check_campaigns]
+### ⚠️ CORE DIRECTIVES (MUST FOLLOW) ###
+1.  **MEMORY IS KEY**: NEVER ask for information already present in "CURRENT STATE". Always check the Raw JSON first.
+2.  **BOOKING FLOW**:
+    a. Get `phone` (05xxxxxxxxx format).
+    b. Immediately use `customer_agent.check_customer` to get the customer's name. Greet them personally.
+    c. Get `service`.
+    d. Get `expert_name`. If missing, use `booking_agent.list_experts` and ask user to choose.
+    e. Get `date` (YYYY-MM-DD) and `time` (HH:MM).
+    f. Use `booking_agent.check_availability`. **CRITICAL**: If user gives booking details (date/time/expert) before phone, run `check_availability` FIRST. ALWAYS include `expert_name` if user mentioned one.
+    g. If unavailable, ask user if they want alternatives. If user says YES ("evet", "tabii", "öner", "bekliyorum"), immediately use `booking_agent.suggest_alternative_times` with current service, date, and expert_name from state.
+    h. Once all info is collected and availability is confirmed, ask for final confirmation.
+    i. On confirmation, use `booking_agent.create_appointment`.
+3.  **INTENT ROUTING**:
+    - **Greetings/General Info/Price**: Classify as `chat` or use `list_services` for prices. DO NOT start the booking flow.
+    - **Booking/Cancellation**: Follow the booking flow or use cancellation tools.
+    - **Info Request (experts, services)**: Use `list_experts` or `list_services`.
+    - **Query Appointment**: Use `customer_agent.get_customer_appointments`.
+4.  **TOOLS**:
+    - `booking_agent`: create_appointment, cancel_appointment, check_availability, suggest_alternative_times, list_experts, list_services.
+    - `customer_agent`: check_customer, create_customer, get_customer_appointments.
+    - `marketing_agent`: check_campaigns.
 
-MANDATORY FLOW (For Booking):
-1. Phone Number (validate format 05xxxxxxxxx) -> 2. Customer Check -> 3. Service -> 4. Expert (Mandatory) -> 5. Date/Time -> 6. Confirmation -> 7. Execution.
-*Rule: If 'expert_name' is missing, use 'list_experts' tool to show options, then ask user to choose.*
-
-### ⚠️ CRITICAL MEMORY RULES (MUST FOLLOW!) ###
-1. **NEVER RE-ASK** for information shown in "ALREADY COLLECTED INFORMATION" above!
-2. If "phone" exists in state → DO NOT ask for phone again!
-3. If "service" exists in state → DO NOT ask for service again!
-4. If "expert_name" exists in state → DO NOT ask for expert again!
-5. Only ask for the FIRST MISSING field in MANDATORY FLOW.
-6. When checking what's missing, ALWAYS check the RAW STATE JSON first!
-
-LOGIC RULES:
-1. MERGE: Combine State + User Message. State has priority for existing fields.
-2. CLASSIFY:
-   - "Chat/FAQ": Greetings, price questions, general info -> Action: "chat".
-   - "Transaction": Booking, cancelling, changing -> Action: "transaction".
-   - "Information Request": Asking for experts/services list -> Action: "execute_tool".
-   - "Query Appointment": User asks about their existing appointment (e.g., "randevumu öğrenmek", "ne zaman randevum var") -> Action: "execute_tool".
-3. PROCESS:
-   - If "Chat": Search KB. Put answer in 'ask_user'. Keep 'steps' empty.
-   - If "Transaction": Check MANDATORY FLOW. Identify first missing field. 
-   - If All Fields Present: Ask for Confirmation (Explicit "Yes").
-   - If Confirmed: Set action to 'execute_tool' and fill 'steps' with 'create_appointment'.
-   - If "Query Appointment": Need phone. If phone present, use 'get_customer_appointments' tool. Display results naturally.
-   - **For 'check_availability' operation:** Ensure 'service_type' from 'current_state.service' is included in 'params'.
-4. CANCELLATION: Requires 'appointment_code'.
-5. INFORMATION REQUESTS: For "list_experts" or "list_services", use action 'execute_tool' and add to 'steps'.
-
-OUTPUT FORMAT (JSON ONLY):
+### JSON OUTPUT FORMAT ###
 {{
-  "extracted": {{ "key": "value" }}, // Only NEW or UPDATED info found in this turn
+  "extracted": {{ "date": "YYYY-MM-DD", "time": "HH:MM", "service": "string", "expert_name": "string" }},
   "plan": {{
     "action": "chat" | "inform_missing" | "confirm" | "execute_tool",
-    "missing_info": ["field1", "field2"...], // Fields NOT in current state
-    "ask_user": "string", // A plain, natural Turkish response string for the user. It MUST NOT be a nested JSON object or wrapped in curly braces.
-    "steps": [ 
-      {{
-        "agent": "booking_agent" | "customer_agent" | "marketing_agent",
-        "operation": "function_name",
-        "params": {{ "key": "value" }}
-      }}
-    ]
+    "missing_info": ["field_name"],
+    "ask_user": "A natural Turkish response for the user. Plain string, no JSON/Markdown.",
+    "steps": [ {{ "agent": "agent_name", "operation": "tool_name", "params": {{}} }} ]
   }}
 }}
 
-EXAMPLES:
-User: "Uzmanlarınızı görebilir miyim?"
-{{
-  "extracted": {{}},
-  "plan": {{
-    "action": "execute_tool",
-    "ask_user": "Elbette! Size uzmanlarımızı listeliyorum.",
-    "steps": [
-      {{
-        "agent": "booking_agent",
-        "operation": "list_experts",
-        "params": {{}}
-      }}
-    ]
-  }}
-}}
-
-INPUT MESSAGE: "{user_message}"
+### USER INPUT ###
+"{user_message}"
 """
 
         try:
@@ -448,12 +425,37 @@ INPUT MESSAGE: "{user_message}"
             # 🔧 FIX: Collected state'i params'a ekle (eğer yoksa)
             collected = conv.get("collected", {})
             
+            # check_customer için telefon ekle
+            if operation == "check_customer":
+                if "phone" not in params and collected.get("phone"):
+                    params["phone"] = collected["phone"]
+            
+            # create_customer için isim ve telefon ekle
+            if operation == "create_customer":
+                if "phone" not in params and collected.get("phone"):
+                    params["phone"] = collected["phone"]
+                if "full_name" not in params and "name" not in params:
+                    if collected.get("name"):
+                        params["full_name"] = collected["name"]
+                    elif collected.get("full_name"):
+                        params["full_name"] = collected["full_name"]
+            
             # check_availability için tarih/saat bilgisini ekle
             if operation == "check_availability":
                 if "date" not in params and collected.get("date"):
                     params["date"] = collected["date"]
                 if "date_time" not in params and collected.get("date") and collected.get("time"):
-                    params["date_time"] = f"{collected['date']} {collected['time']}"
+                    # ISO format: YYYY-MM-DDTHH:MM:SS
+                    params["date_time"] = f"{collected['date']}T{collected['time']}:00"
+                if "expert_name" not in params and collected.get("expert_name"):
+                    params["expert_name"] = collected["expert_name"]
+            
+            # suggest_alternative_times için parametreleri ekle
+            if operation == "suggest_alternative_times":
+                if "service_type" not in params and collected.get("service"):
+                    params["service_type"] = collected["service"]
+                if "date" not in params and collected.get("date"):
+                    params["date"] = collected["date"]
                 if "expert_name" not in params and collected.get("expert_name"):
                     params["expert_name"] = collected["expert_name"]
             
@@ -464,7 +466,8 @@ INPUT MESSAGE: "{user_message}"
                 if "service_type" not in params and collected.get("service"):
                     params["service_type"] = collected["service"]
                 if "appointment_datetime" not in params and collected.get("date") and collected.get("time"):
-                    params["appointment_datetime"] = f"{collected['date']} {collected['time']}"
+                    # ISO format: YYYY-MM-DDTHH:MM:SS
+                    params["appointment_datetime"] = f"{collected['date']}T{collected['time']}:00"
                 if "expert_name" not in params and collected.get("expert_name"):
                     params["expert_name"] = collected["expert_name"]
             
@@ -519,11 +522,19 @@ CONTEXT:
 
 RULES:
 1. **APPOINTMENT CREATED:** If result has 'success': true and a 'code', say: "Harika! Randevunuz oluşturuldu. Randevu Kodunuz: [CODE]. Sizi bekliyoruz!"
-2. **AVAILABILITY:** If result lists 'slots' or 'times', list them clearly but concisely (e.g., "Sabah 09:00 ve 10:30 müsait").
-3. **EXPERTS:** If result lists experts, say: "Şu uzmanlarımız hizmet veriyor: [Expert Names]. Hangisini tercih edersiniz?"
-4. **ERROR:** If 'success': false, apologize politely and ask for missing info or suggest an alternative.
-5. **TONE:** Warm, professional, NO emojis. Max 3 sentences.
-6.NO NESTED JSON: The 'ask_user' field must be a PLAIN STRING. NEVER wrap the user response in curly braces {{}}, JSON objects (like {{"response": "..."}}), or labels. Just write the natural Turkish sentence directly.
+2. **QUERY APPOINTMENTS:** If result has 'appointments' array:
+   - If array is EMPTY or has 0 items: "Kayıtlı randevunuz bulunmuyor. Yeni randevu oluşturmak ister misiniz?"
+   - If array has items with status='confirmed': List them with date, time, service and expert. DO NOT mention cancelled appointments.
+   - NEVER say "iptal edilmiş" or "cancelled" for appointments with status='confirmed'!
+3. **ALTERNATIVE TIMES:** If result has 'alternatives' array, list ONLY 3-4 options maximum, concisely:
+   - "5 Aralık: 09:00, 11:30, 14:00 müsait. Hangisini tercih edersiniz?" (max 1 sentence!)
+   - DO NOT list same time that user requested!
+   - DO NOT repeat dates, just list times.
+4. **AVAILABILITY:** If result lists 'slots' or 'times', list them clearly but concisely (e.g., "Sabah 09:00 ve 10:30 müsait").
+5. **EXPERTS:** If result lists experts, say: "Şu uzmanlarımız hizmet veriyor: [Expert Names]. Hangisini tercih edersiniz?"
+6. **ERROR:** If 'success': false, apologize politely and ask for missing info or suggest an alternative.
+7. **TONE:** Warm, professional, NO emojis. Max 2 sentences.
+8. NO NESTED JSON: The 'ask_user' field must be a PLAIN STRING. NEVER wrap the user response in curly braces {{}}, JSON objects (like {{"response": "..."}}), or labels. Just write the natural Turkish sentence directly.
 OUTPUT (A plain, natural Turkish String ONLY. NEVER wrap the user response in JSON, curly braces, or labels):"""
 
         try:
