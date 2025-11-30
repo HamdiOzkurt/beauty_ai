@@ -51,6 +51,17 @@ except Exception as e:
 from agents.orchestrator_agent import OrchestratorAgent
 from config import settings
 
+# --- V4 FEATURE FLAG ---
+# Environment variable ile OrchestratorV4'e geçiş kontrolü
+USE_ORCHESTRATOR_V4 = os.getenv("USE_ORCHESTRATOR_V4", "false").lower() == "true"
+
+if USE_ORCHESTRATOR_V4:
+    logging.info("🚀 Using OrchestratorV4 (2 LLM Call Strategy)")
+    from agents.orchestrator_v4 import OrchestratorV4
+else:
+    logging.info("📌 Using OrchestratorAgent V3 (Legacy)")
+# --- END V4 FEATURE FLAG ---
+
 
 # --- YENİ: Dosya tabanlı, thread-safe oturum yönetimi ---
 class FileSessionStore:
@@ -126,9 +137,18 @@ def get_gpu_stt():
 # Konuşma durumunu modül seviyesinde ve dosya tabanlı olarak sakla
 conversations = FileSessionStore('conversations.json')
 
-# Orchestrator Agent'ı başlat
+# Orchestrator Agent'ı başlat (V3 veya V4)
 logging.info("Orchestrator Agent başlatılıyor...")
-orchestrator_agent = OrchestratorAgent(conversations)
+if USE_ORCHESTRATOR_V4:
+    # V4: Dict yerine FileSessionStore wrap etmeliyiz
+    # FileSessionStore dict-like interface sağlıyor, V4 dict bekliyor
+    # Geçici çözüm: conversations dict'e dönüştür
+    conversations_dict = {}
+    orchestrator_agent = OrchestratorV4(conversations_dict)
+    logging.info("✅ OrchestratorV4 başlatıldı (conversations in-memory)")
+else:
+    orchestrator_agent = OrchestratorAgent(conversations)
+    logging.info("✅ OrchestratorAgent V3 başlatıldı")
 
 async def process_audio_input(session_id: str, audio_data: bytes, websocket=None) -> str:
     """Gelen ses verisini işler, GPU ile metne çevirir ve yanıt üretir."""
