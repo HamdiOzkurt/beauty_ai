@@ -30,8 +30,9 @@ class OrchestratorAgent:
             generation_config={
                 "temperature": 0.3,  # Daha kararlı JSON için düşürdük
                 "top_p": 0.95,
-                "top_k": 40,
-                "response_mime_type": "application/json" # Gemini'ye JSON zorlaması
+                "top_k": 20,
+                "response_mime_type": "application/json", # Gemini'ye JSON zorlaması
+                "max_output_tokens": 300
             }
         )
         self.conversations = conversations
@@ -510,7 +511,7 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
         
         prompt = f"""### RESPONSE GENERATION ###
 ROLE: Beauty Center Assistant.
-GOAL: Create a natural Turkish response based on the TOOL RESULTS.
+GOAL: Create a short and natural Turkish response based on TOOL RESULTS.
 
 USER SAID: "{user_msg}"
 
@@ -523,10 +524,10 @@ CONTEXT:
 RULES:
 1. **APPOINTMENT CREATED:** If result has 'success': true and a 'code', say: "Harika! Randevunuz oluşturuldu. Randevu Kodunuz: [CODE]. Sizi bekliyoruz!"
 2. **QUERY APPOINTMENTS:** If result has 'appointments' array:
-   - If array is EMPTY or has 0 items: "Kayıtlı randevunuz bulunmuyor. Yeni randevu oluşturmak ister misiniz?"
+   - If array is EMPTY or has 0 items: "Kayıtlı randevunuz bulunmuyor."
    - If array has items with status='confirmed': List them with date, time, service and expert. DO NOT mention cancelled appointments.
    - NEVER say "iptal edilmiş" or "cancelled" for appointments with status='confirmed'!
-3. **ALTERNATIVE TIMES:** If result has 'alternatives' array, list ONLY 3-4 options maximum, concisely:
+3. **ALTERNATIVE TIMES:** If the result is an 'alternatives' array, concisely list up to 3 options and the nearest available time:
    - "5 Aralık: 09:00, 11:30, 14:00 müsait. Hangisini tercih edersiniz?" (max 1 sentence!)
    - DO NOT list same time that user requested!
    - DO NOT repeat dates, just list times.

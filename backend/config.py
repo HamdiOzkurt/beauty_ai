@@ -46,7 +46,7 @@ class Settings:
     # Agent Ayarları
     MAX_CONVERSATION_TURNS: int = 20
     MAX_RETRY_ATTEMPTS: int = 3
-    AGENT_TEMPERATURE: float = 0.7
+    AGENT_TEMPERATURE: float = 0.4
     AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
 
     # Ollama

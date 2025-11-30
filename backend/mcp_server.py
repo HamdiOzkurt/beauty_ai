@@ -827,8 +827,15 @@ mcp.tool(check_campaigns)
 def list_services() -> Dict:
     """Tüm hizmetleri listeler."""
     services = get_all_services_from_cms()
-    names = [s['name'] for s in services]
-    return {"success": True, "services": names}
+    formatted_services = []
+    for s in services:
+        formatted_services.append({
+            "name": s.get('name', ''),
+            "price": s.get('price', 0),
+            "description": s.get('description', ''),
+            "duration": s.get('duration_minute', 60)
+        })
+    return {"success": True, "services": formatted_services}
 
 mcp.tool(list_services)
 

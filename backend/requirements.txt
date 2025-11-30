@@ -25,3 +25,6 @@ PyAudio>=0.2.13
 torch
 torchaudio
 silero
+
+# Garak LLM Security Testing
+garak
