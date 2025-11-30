@@ -186,7 +186,7 @@ class OrchestratorAgent:
         # Müşteri ismi bilgisi (context'ten)
         customer_greeting = ""
         if context.get("customer_name"):
-            customer_greeting = f"\n### 👤 CUSTOMER INFO ###\nRegistered Customer Name: {context['customer_name']}\n**IMPORTANT:** Always address this customer by their name (e.g., 'Merhaba {context['customer_name']}' or '{context['customer_name']} Hanım/Bey'). Be warm and personal!\n"
+            customer_greeting = f"\n### 👤 CUSTOMER xNFO ###\nRegistered Customer Name: {context['customer_name']}\n**IMPORTANT:** Always address this customer by their name (e.g., 'Merhaba {context['customer_name']}' or '{context['customer_name']} Hanım/Bey'). Be warm and personal!\n"
         
         # Kampanya bilgilerini prompt'a ekle
         campaign_info = ""
