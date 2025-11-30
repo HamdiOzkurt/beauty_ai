@@ -36,6 +36,7 @@ class ExtractedEntities(BaseModel):
     expert_name: Optional[str] = Field(None, description="Uzman adı")
     date: Optional[str] = Field(None, description="Tarih (YYYY-MM-DD)")
     time: Optional[str] = Field(None, description="Saat (HH:MM)")
+    confirmed: Optional[bool] = Field(None, description="Kullanıcının bir işlemi (örn: randevu) onaylayıp onaylamadığı")
 
     @validator('phone')
     def validate_phone(cls, v):
@@ -160,33 +161,54 @@ class IntentEntityRouter:
         self,
         user_message: str,
         collected_state: Dict[str, Any],
-        conversation_history: List[Dict] = None
+        conversation_history: List[Dict] = None,
+        context: Dict[str, Any] = None
     ) -> IntentEntityResult:
         """
         User message'dan intent ve entity'leri extract et.
-
-        Args:
-            user_message: Kullanıcının mesajı
-            collected_state: Şu ana kadar toplanan bilgiler
-            conversation_history: Konuşma geçmişi (son 6 mesaj)
-
-        Returns:
-            IntentEntityResult (validated)
+        Artık stateful: Confirmation gibi durumları LLM'e gitmeden çözer.
         """
         self.logger.info(f"🎯 [LLM #1] Intent & Entity extraction başladı")
+        context = context or {}
 
-        # History'yi formatla (son 6 mesaj yeterli)
+        # --- STATEFUL PRE-ROUTING LOGIC ---
+        if context.get("confirmation_pending"):
+            self.logger.info("🚦 Confirmation pending - checking for user confirmation...")
+            normalized_message = user_message.lower().strip()
+            
+            AFFIRMATIVE_KEYWORDS = ["evet", "onaylıyorum", "eminim", "doğru", "evd", "onayla"]
+            NEGATIVE_KEYWORDS = ["hayır", "iptal", "vazgeçtim", "istemiyorum", "hayir", "kalsın"]
+            
+            is_affirmative = any(keyword in normalized_message for keyword in AFFIRMATIVE_KEYWORDS)
+            is_negative = any(keyword in normalized_message for keyword in NEGATIVE_KEYWORDS)
+
+            last_intent = context.get("last_intent", IntentType.CHAT)
+
+            if is_affirmative:
+                self.logger.info("✅ User confirmed action, bypassing LLM.")
+                return IntentEntityResult(
+                    intent=last_intent,
+                    entities=ExtractedEntities(confirmed=True),
+                    confidence=1.0
+                )
+            
+            if is_negative:
+                self.logger.info("❌ User denied action, bypassing LLM.")
+                return IntentEntityResult(
+                    intent=last_intent,
+                    entities=ExtractedEntities(confirmed=False),
+                    confidence=1.0
+                )
+
+        # --- LLM ROUTING (if no stateful rule matched) ---
+        self.logger.info(f"🧠 No stateful rule matched, proceeding with LLM.")
+        
         history_text = self._format_history(conversation_history or [])
-
-        # Collected state'i özet (LLM'e yardımcı olsun)
         state_summary = self._format_collected_state(collected_state)
-
-        # Bugünün tarihi (temporal expression için)
         today = datetime.now()
         today_str = today.strftime("%Y-%m-%d")
         tomorrow_str = (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Prompt oluştur - COMPACT & FOCUSED
         prompt = self._build_prompt(
             user_message=user_message,
             today=today_str,
@@ -196,30 +218,20 @@ class IntentEntityRouter:
         )
 
         try:
-            # Gemini function calling ile çağır
             tools = [{"function_declarations": [self.extraction_function]}]
-
             response = self.model.generate_content(
                 prompt,
                 tools=tools,
                 tool_config={"function_calling_config": {"mode": "ANY"}}
             )
 
-            # Function call'dan parametreleri al
             if response.candidates and response.candidates[0].content.parts:
                 function_call = response.candidates[0].content.parts[0].function_call
-
                 if function_call and function_call.name == "extract_intent_entities":
-                    # Function call arguments'ı al
                     args = dict(function_call.args)
-
                     self.logger.info(f"[LLM #1] Function call args: {args}")
-
-                    # Intent ve confidence extract et
                     intent_str = args.get("intent", "chat")
                     confidence = args.get("confidence", 0.8)
-
-                    # Entities oluştur
                     entities = ExtractedEntities(
                         phone=args.get("phone"),
                         service=args.get("service"),
@@ -227,37 +239,23 @@ class IntentEntityRouter:
                         date=args.get("date"),
                         time=args.get("time")
                     )
-
-                    # Result oluştur
                     result = IntentEntityResult(
                         intent=IntentType(intent_str),
                         entities=entities,
                         confidence=confidence
                     )
-
                     self.logger.info(
                         f"[OK] [LLM #1] Intent: {result.intent}, "
-                        f"Entities: {len([k for k, v in result.entities.model_dump().items() if v])}"
+                        f"Entities: {len([k for k, v in result.entities.model_dump(exclude_none=True).items() if v])}"
                     )
-
                     return result
 
-            # Function call alınamadıysa fallback
             self.logger.warning("[WARN] [LLM #1] No function call in response")
-            return IntentEntityResult(
-                intent=IntentType.CHAT,
-                entities=ExtractedEntities(),
-                confidence=0.3
-            )
+            return IntentEntityResult(intent=IntentType.CHAT, entities=ExtractedEntities(), confidence=0.3)
 
         except Exception as e:
             self.logger.error(f"[FAIL] [LLM #1] Error: {e}", exc_info=True)
-            # Fallback
-            return IntentEntityResult(
-                intent=IntentType.CHAT,
-                entities=ExtractedEntities(),
-                confidence=0.0
-            )
+            return IntentEntityResult(intent=IntentType.CHAT, entities=ExtractedEntities(), confidence=0.0)
 
     def _build_prompt(
         self,
@@ -296,11 +294,34 @@ Yarın: {tomorrow} (Referans: "yarın")
 "{user_message}"
 
 ### INTENT SEÇENEKLERİ ###
-1. **booking**: Randevu oluşturmak istiyor
+1. **booking**: Randevu oluşturmak istiyor VEYA randevuyla ilgili SORU soruyor
 2. **query_appointment**: Mevcut randevularını soruyor ("randevum var mı", "randevumu öğrenmek istiyorum")
 3. **cancel**: Randevu iptal etmek istiyor
 4. **campaign_inquiry**: Kampanya soruyor
-5. **chat**: Genel sohbet/soru
+5. **chat**: SADECE selamlaşma veya tamamen alakasız sohbet
+
+### ⚠️ KRİTİK SINIFLANDIRMA KURALLARI ###
+**BOOKING olarak sınıflandır:**
+- Uzman/personel soruları: "kim var", "hangi uzmanlar", "Ayşe var mı", "kimler çalışıyor"
+- Müsaitlik soruları: "müsait misiniz", "boş saatiniz", "ne zaman gelebilirim", "saat kaçta"
+- Hizmet soruları: "neler yapıyorsunuz", "hangi hizmetler", "saç kesimi var mı"
+- Öneri soruları: "ne önerirsiniz", "başka ne", "tamamlayıcı hizmet"
+- Tarih/saat soruları: "haftaya salı", "yarın müsait mi", "bugün randevu alabilir miyim"
+
+**CAMPAIGN_INQUIRY olarak sınıflandır:**
+- Kampanya soruları: "kampanya var mı", "indirim", "fırsat", "promosyon"
+
+**QUERY_APPOINTMENT olarak sınıflandır:**
+- Mevcut randevu soruları: "randevum ne zaman", "randevularımı göster", "randevum var mı"
+
+**CANCEL olarak sınıflandır:**
+- İptal istekleri: "iptal etmek istiyorum", "randevumu iptal et", "vazgeçtim"
+
+**CHAT olarak sınıflandır (ÇOK NADIR!):**
+- SADECE selamlaşma: "merhaba", "nasılsın", "iyi günler"
+- SADECE alakasız: "hava nasıl", "ne yapıyorsun"
+
+**ÖNEMLİ:** Kullanıcı güzellik salonu hakkında BİR ŞEY soruyorsa, bu ASLA "chat" değildir!
 
 ### ENTITY ÇIKARMA KURALLARI ###
 - **phone**: 05XXXXXXXXX formatı. Örn: "532 123 45 67" → "05321234567"

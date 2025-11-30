@@ -75,6 +75,90 @@ class ResponseGenerator:
         # Fallback
         return "Anlayamadım, tekrar eder misiniz?"
 
+    def _clean_tool_result(self, tool_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Tool result'ı temizle - Gemini'ye göndermeden önce.
+
+        Traceback, stack trace, teknik hata mesajlarını kısa özet haline getir.
+        """
+        if not isinstance(tool_result, dict):
+            return {"success": False, "error": "Invalid tool result"}
+
+        cleaned = {}
+
+        for key, value in tool_result.items():
+            # Error mesajlarını temizle
+            if key == "error" and isinstance(value, str):
+                # Traceback varsa sadece ilk satırını al
+                if "Traceback" in value or "File " in value:
+                    # Sadece hata tipini ve mesajını al
+                    lines = value.split("\n")
+                    error_line = lines[-1] if lines else value
+                    # RuntimeError, ConnectionError gibi bilgiler yeterli
+                    if ":" in error_line:
+                        cleaned[key] = error_line.split(":", 1)[-1].strip()
+                    else:
+                        cleaned[key] = "Connection failed"
+                else:
+                    # Uzun hata mesajını kısalt (max 100 karakter)
+                    cleaned[key] = value[:100] if len(value) > 100 else value
+            else:
+                cleaned[key] = value
+
+        return cleaned
+
+    def _get_fallback_response(self, tool_name: str, tool_result: Dict[str, Any]) -> str:
+        """
+        LLM hata verdiğinde tool-specific fallback mesaj döndür.
+
+        Bu, Gemini'nin safety filter'ına takıldığında veya boş yanıt döndüğünde devreye girer.
+        """
+        success = tool_result.get("success", False)
+
+        # Tool-specific fallback messages
+        fallback_messages = {
+            "check_customer": {
+                True: "Müşteri bilgileriniz bulundu. Devam edebiliriz.",
+                False: "Telefon numaranızı sistemde bulamadım. Yeni kayıt oluşturabiliriz."
+            },
+            "create_appointment": {
+                True: f"Randevunuz oluşturuldu. {tool_result.get('appointment', {}).get('code', '')}",
+                False: "Randevu oluşturulurken bir sorun oluştu. Lütfen tekrar deneyin."
+            },
+            "cancel_appointment": {
+                True: "Randevunuz iptal edildi.",
+                False: "Randevu iptal edilirken bir sorun oluştu."
+            },
+            "get_customer_appointments": {
+                True: "Randevu bilgileriniz bulundu." if tool_result.get("appointments") else "Kayıtlı randevunuz bulunmuyor.",
+                False: "Randevularınız sorgulanırken bir sorun oluştu."
+            },
+            "check_availability": {
+                True: "Müsaitlik durumu kontrol edildi.",
+                False: "Müsaitlik kontrol edilirken bir sorun oluştu."
+            },
+            "list_experts": {
+                True: "Uzman listesi hazır.",
+                False: "Uzmanlar listelenirken bir sorun oluştu."
+            },
+            "list_services": {
+                True: "Hizmet listesi hazır.",
+                False: "Hizmetler listelenirken bir sorun oluştu."
+            },
+            "check_campaigns": {
+                True: "Kampanya bilgileri hazır.",
+                False: "Kampanyalar kontrol edilirken bir sorun oluştu."
+            }
+        }
+
+        # Get fallback message
+        tool_fallbacks = fallback_messages.get(tool_name, {
+            True: "İşleminiz tamamlandı.",
+            False: "Üzgünüm, bir sorun oluştu. Lütfen tekrar deneyin."
+        })
+
+        return tool_fallbacks.get(success, "İşleminiz tamamlandı.")
+
     async def _generate_tool_response(
         self,
         tool_name: str,
@@ -107,6 +191,20 @@ class ResponseGenerator:
         try:
             # Gemini'ye gönder (text generation, temperature=0.7)
             response = self.model.generate_content(prompt)
+
+            # Güvenlik filtresi veya boş yanıt kontrolü
+            if not response.candidates:
+                self.logger.warning("⚠️ [LLM #2] No candidates in response (safety filter?)")
+                raise ValueError("No candidates in response")
+
+            candidate = response.candidates[0]
+
+            # finish_reason kontrolü (2 = SAFETY, 3 = RECITATION)
+            if hasattr(candidate, 'finish_reason') and candidate.finish_reason in [2, 3]:
+                self.logger.warning(f"⚠️ [LLM #2] Response blocked (finish_reason={candidate.finish_reason})")
+                raise ValueError(f"Response blocked by safety filter (reason={candidate.finish_reason})")
+
+            # Text extraction
             response_text = response.text.strip()
 
             # Validation - JSON döndürmüş mü? (hata)
@@ -128,13 +226,16 @@ class ResponseGenerator:
             self.logger.info(f"✅ [LLM #2] Generated response: {response_text[:50]}...")
             return response_text
 
+        except ValueError as e:
+            # Safety filter veya boş yanıt hatası
+            self.logger.error(f"❌ [LLM #2] Safety/Empty response error: {e}")
+            # Tool-specific fallback
+            return self._get_fallback_response(tool_name, tool_result)
+
         except Exception as e:
             self.logger.error(f"❌ [LLM #2] Generation error: {e}", exc_info=True)
-            # Fallback - tool success/failure'a göre generic message
-            if tool_result.get("success"):
-                return "İşleminizi tamamladım."
-            else:
-                return "Üzgünüm, bir sorun oluştu. Lütfen tekrar deneyin."
+            # Tool-specific fallback
+            return self._get_fallback_response(tool_name, tool_result)
 
     def _build_response_prompt(
         self,
@@ -150,9 +251,11 @@ class ResponseGenerator:
         - Tool-specific rules
         - Examples vermiyoruz (model iyi)
         - Max 30 satır
+        - Hata mesajlarını temizle (Traceback'leri gösterme)
         """
-        # Tool result'ı formatla (pretty print)
-        tool_result_str = json.dumps(tool_result, ensure_ascii=False, indent=2)
+        # Tool result'ı temizle ve formatla
+        cleaned_result = self._clean_tool_result(tool_result)
+        tool_result_str = json.dumps(cleaned_result, ensure_ascii=False, indent=2)
 
         # Kampanya bilgisi (varsa)
         campaign_str = ""

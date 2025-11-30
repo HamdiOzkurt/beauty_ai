@@ -143,7 +143,6 @@ class OrchestratorV4:
     ) -> str:
         """
         Ana işlem akışı - V4
-
         Flow:
         1. Get/create conversation
         2. Quick pattern check
@@ -152,14 +151,6 @@ class OrchestratorV4:
         5. Tool execution (if needed)
         6. LLM #2: Response generation
         7. Send response
-
-        Args:
-            session_id: Oturum ID
-            user_message: Kullanıcının mesajı
-            websocket: WebSocket connection (opsiyonel)
-
-        Returns:
-            Response string
         """
         self.logger.info(f"\n{'='*60}\n🎯 REQUEST: {user_message}\n{'='*60}")
 
@@ -188,22 +179,28 @@ class OrchestratorV4:
             route_result = await self.intent_router.route(
                 user_message=user_message,
                 collected_state=conv.get("collected", {}),
-                conversation_history=conv.get("history", [])
+                conversation_history=conv.get("history", []),
+                context=conv.get("context", {})
             )
 
             intent = route_result.intent.value
             entities = route_result.entities.model_dump(exclude_none=True)
 
+            # Handle the new 'confirmed' entity from stateful pre-routing
+            if "confirmed" in entities:
+                conv["context"][StateMarker.CONFIRMED] = entities["confirmed"]
+                conv["context"]["confirmation_pending"] = False  # Reset the flag
+                # Don't add 'confirmed' to the collected entities
+                del entities["confirmed"]
+
             # Entities'leri collected'a merge et
             for key, value in entities.items():
                 if value:
-                    # Eğer tarih/saat değişmişse, availability check'i reset et
                     if key in ["date", "time", "expert_name"]:
                         old_value = conv["collected"].get(key)
                         if old_value and old_value != value:
                             self.logger.info(f"♻️ {key} changed: {old_value} → {value}")
                             self.flow_manager.reset_availability_check(conv["context"])
-
                     conv["collected"][key] = value
 
             # STEP 3: Flow Manager - Next Action Decision
@@ -212,11 +209,14 @@ class OrchestratorV4:
                 collected=conv["collected"],
                 context=conv["context"]
             )
-
             action_type = next_action["action"]
 
             # STEP 4: Tool Execution (if needed)
             tool_result = None
+            DATA_QUERYING_TOOLS = [
+                "list_experts", "check_availability", "get_customer_appointments",
+                "check_campaigns", "suggest_alternative_times", "list_services"
+            ]
 
             if action_type == "tool_call":
                 tool_name = next_action["tool"]
@@ -228,37 +228,35 @@ class OrchestratorV4:
                     conv=conv
                 )
 
-                # Update context based on tool result
                 self._update_context_from_tool(tool_name, tool_result, conv)
 
-                # Re-evaluate next action (tool sonrası)
-                next_action = self.flow_manager.get_next_action(
-                    intent=intent,
-                    collected=conv["collected"],
-                    context=conv["context"]
-                )
-
+                if tool_name not in DATA_QUERYING_TOOLS:
+                    next_action = self.flow_manager.get_next_action(
+                        intent=intent,
+                        collected=conv["collected"],
+                        context=conv["context"]
+                    )
+            
             # STEP 5: Handle "ask_alternative" special case
             if action_type == "ask_alternative":
-                # User'a sor, cevabı bekle (bu request'te değil, bir sonraki request'te)
                 response = next_action.get("message", "Alternatif saatler önerelim mi?")
+                conv["context"]["waiting_for_alternative_approval"] = True
                 await self._send_response(response, conv, websocket, session_id)
                 return response
-
-            # User alternative'leri kabul ettiyse, suggest_alternative_times çağır
+            
             if "evet" in user_message.lower() and conv["context"].get("waiting_for_alternative_approval"):
-                # Approval verildi, alternatives göster
                 tool_result = await self._execute_tool(
                     tool_name="suggest_alternative_times",
                     tool_params={
-                        "service_type": conv["collected"]["service"],
-                        "date": conv["collected"]["date"],
+                        "service_type": conv["collected"].get("service"),
+                        "date": conv["collected"].get("date"),
                         "expert_name": conv["collected"].get("expert_name")
                     },
                     conv=conv
                 )
                 conv["context"]["waiting_for_alternative_approval"] = False
                 conv["context"][StateMarker.ALTERNATIVES_SHOWN] = True
+                next_action = {"action": "tool_call", "tool": "suggest_alternative_times"}
 
             # STEP 6: LLM Call #2 - Response Generation
             final_response = await self.response_generator.generate(
@@ -344,16 +342,36 @@ class OrchestratorV4:
         collected = conv.setdefault("collected", {})
 
         if not tool_result.get("success"):
-            self.logger.warning(f"⚠️ Tool failed: {tool_name}")
+            self.logger.warning(f"⚠️ Tool failed: {tool_name} with error: {tool_result.get('error')}")
+            # Handle special case: check_customer fails because customer is not found
+            if tool_name == "check_customer" and ("bulunamadı" in tool_result.get("error", "").lower() or "not found" in tool_result.get("error", "").lower()):
+                self.logger.info("ℹ️ Customer not found via tool. Treating as a new customer.")
+                context["is_new_customer"] = True
+                context[StateMarker.CUSTOMER_CHECKED] = True
+                return  # This is a valid, handled outcome
+            
+            # Handle special case: get_customer_appointments fails because none are found
+            if tool_name == "get_customer_appointments" and ("bulunamadı" in tool_result.get("error", "").lower() or "not found" in tool_result.get("error", "").lower()):
+                self.logger.info("ℹ️ No appointments found for customer. Treating as success with empty list.")
+                context[StateMarker.APPOINTMENTS_FETCHED] = True
+                context["appointments"] = []
+                return # This is a valid, handled outcome
+
             return
 
         # check_customer
         if tool_name == "check_customer":
             customer = tool_result.get("customer", {})
-            context["customer_name"] = customer.get("name")
-            context["customer_id"] = customer.get("id")
+            if not customer: # Double check if customer object is empty
+                self.logger.info("ℹ️ Customer not found (empty result). Treating as a new customer.")
+                context["is_new_customer"] = True
+            else:
+                context["customer_name"] = customer.get("name")
+                context["customer_id"] = customer.get("id")
+                context["is_new_customer"] = False # Customer was found
+                self.logger.info(f"📝 Customer found: {customer.get('name')}")
+            
             context[StateMarker.CUSTOMER_CHECKED] = True
-            self.logger.info(f"📝 Customer: {customer.get('name')}")
 
         # get_customer_appointments
         elif tool_name == "get_customer_appointments":
@@ -366,6 +384,11 @@ class OrchestratorV4:
                 context["latest_appointment"] = latest
                 context["appointment_code"] = latest.get("id")
                 self.logger.info(f"📋 {len(appointments)} appointments fetched")
+            else:
+                self.logger.info("📋 No appointments found for customer (success case).")
+                context["latest_appointment"] = None
+                context["appointment_code"] = None
+                context["appointments"] = []
 
         # check_availability
         elif tool_name == "check_availability":

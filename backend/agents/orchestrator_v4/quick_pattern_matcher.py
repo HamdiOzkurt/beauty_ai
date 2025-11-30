@@ -132,8 +132,8 @@ class QuickPatternMatcher:
             for keyword in keywords:
                 keyword_normalized = keyword.lower()
 
-                # Substring matching
-                if keyword_normalized in normalized_message:
+                # Substring matching'i regex ile kelime sınırı kontrolü yaparak iyileştir
+                if re.search(r'\b' + re.escape(keyword_normalized) + r'\b', normalized_message):
                     matches.append({
                         "pattern": pattern_name,
                         "response": pattern_config["response"],

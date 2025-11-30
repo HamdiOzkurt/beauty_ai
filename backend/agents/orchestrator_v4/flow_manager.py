@@ -81,29 +81,68 @@ class FlowManager:
 
     def _check_booking_flow(self, collected: Dict, context: Dict) -> Dict:
         """
-        Randevu oluşturma akışı (step-by-step)
-
-        Steps:
-        1. Phone sor
-        2. check_customer (tool)
-        3. Service sor
-        4. Expert sor (veya list_experts)
-        5. Date/Time sor
-        6. check_availability (tool)
-        7. Handle unavailable (alternative sor)
-        8. Confirm
-        9. create_appointment (tool)
+        Randevu oluşturma akışı (dinamik ve esnek, v2)
         """
+        # --- ÖNCELİKLİ KONTROLLER (Kullanıcının sorusuna direkt cevap) ---
 
-        # STEP 1: Phone kontrolü
-        if not collected.get("phone"):
+        # ÖNCELİK 1: Müsaitlik sorgusu (en spesifik)
+        if collected.get("service") and collected.get("date") and not context.get(StateMarker.AVAILABILITY_CHECKED):
+            tool_params = {
+                "service_type": collected["service"],
+                "date": collected["date"],
+                "time": collected.get("time"),
+            }
+            if collected.get("expert_name"):
+                tool_params["expert_name"] = collected["expert_name"]
             return self._build_action(
-                action_type=ActionType.ASK_MISSING,
-                field="phone",
-                message=get_missing_message("phone")
+                action_type=ActionType.TOOL_CALL,
+                tool="check_availability",
+                tool_params=tool_params
             )
 
-        # STEP 2: Customer check (tool call)
+        # ÖNCELİK 2: Uzman listesi sorgusu
+        if collected.get("service") and not collected.get("expert_name") and not context.get(StateMarker.EXPERTS_LISTED):
+            return self._build_action(
+                action_type=ActionType.TOOL_CALL,
+                tool="list_experts",
+                tool_params={"service_type": collected["service"]}
+            )
+
+        # --- VERİ TOPLAMA (Eksik bilgileri sırayla sor) ---
+
+        if not collected.get("service"):
+            return self._build_action(action_type=ActionType.ASK_MISSING, field="service", message=get_missing_message("service"))
+
+        if not collected.get("date"):
+            return self._build_action(action_type=ActionType.ASK_MISSING, field="date", message=get_missing_message("date"))
+        
+        if not collected.get("time"):
+            if not (context.get(StateMarker.AVAILABILITY_CHECKED) and context.get(StateMarker.AVAILABLE)):
+                return self._build_action(action_type=ActionType.ASK_MISSING, field="time", message=get_missing_message("time"))
+
+        # Müsaitlik kontrolü yapıldı ve doluysa -> alternatif öner
+        if context.get(StateMarker.AVAILABILITY_CHECKED) and not context.get(StateMarker.AVAILABLE):
+            if not context.get(StateMarker.ALTERNATIVES_SHOWN):
+                return self._build_action(
+                    action_type=ActionType.TOOL_CALL,
+                    tool="suggest_alternative_times",
+                    tool_params={
+                         "service_type": collected["service"],
+                         "date_time": f"{collected['date']}T{collected['time']}:00",
+                         "expert_name": collected.get("expert_name")
+                    }
+                )
+            return self._build_action(ActionType.CHAT)
+
+        if context.get(StateMarker.EXPERTS_LISTED) and not collected.get("expert_name"):
+            return self._build_action(action_type=ActionType.ASK_MISSING, field="expert_name", message="Hangi uzmanımızdan randevu almak istersiniz?")
+
+        # --- RANDEVU SONLANDIRMA (Kullanıcı bilgileri ve onay) ---
+        # Bu noktada randevu için gerekli temel bilgiler (hizmet, tarih, saat) toplanmış olmalı.
+        
+        if not collected.get("phone"):
+            return self._build_action(action_type=ActionType.ASK_MISSING, field="phone", message=get_missing_message("phone"))
+            
         if not context.get(StateMarker.CUSTOMER_CHECKED):
             return self._build_action(
                 action_type=ActionType.TOOL_CALL,
@@ -111,97 +150,34 @@ class FlowManager:
                 tool_params={"phone": collected["phone"]}
             )
 
-        # STEP 3: Service kontrolü
-        if not collected.get("service"):
-            return self._build_action(
-                action_type=ActionType.ASK_MISSING,
-                field="service",
-                message=get_missing_message("service")
-            )
+        # Müşteri yeni ise, isim sor
+        if context.get("is_new_customer") and not collected.get("name"):
+             return self._build_action(action_type=ActionType.ASK_MISSING, field="name", message="Yeni kayıt için adınız ve soyadınız nedir?")
 
-        # STEP 4: Expert kontrolü
-        if not collected.get("expert_name"):
-            # Eğer experts listelenmemişse, liste (tool)
-            if not context.get(StateMarker.EXPERTS_LISTED):
-                return self._build_action(
-                    action_type=ActionType.TOOL_CALL,
-                    tool="list_experts",
-                    tool_params={"service_type": collected["service"]}
-                )
-            # Liste gösterildi ama seçim yapılmadı, tekrar sor
-            return self._build_action(
-                action_type=ActionType.ASK_MISSING,
-                field="expert_name",
-                message="Hangi uzmanımızdan randevu almak istersiniz?"
-            )
+        # Her şey tamamsa onaya sun
+        if (context.get(StateMarker.AVAILABLE) or context.get(StateMarker.AVAILABILITY_CHECKED)) and not context.get(StateMarker.CONFIRMED):
+            if not collected.get("expert_name"):
+                 collected["expert_name"] = "herhangi bir uzman" 
 
-        # STEP 5: Date kontrolü
-        if not collected.get("date"):
-            return self._build_action(
-                action_type=ActionType.ASK_MISSING,
-                field="date",
-                message=get_missing_message("date")
-            )
+            context["confirmation_pending"] = True
+            context["last_intent"] = FlowType.BOOKING
+            return self._build_action(action_type=ActionType.CONFIRM, message=get_booking_confirmation_message(collected))
 
-        # STEP 6: Time kontrolü
-        if not collected.get("time"):
-            return self._build_action(
-                action_type=ActionType.ASK_MISSING,
-                field="time",
-                message=get_missing_message("time")
-            )
-
-        # STEP 7: Availability check (tool call)
-        if not context.get(StateMarker.AVAILABILITY_CHECKED):
-            return self._build_action(
-                action_type=ActionType.TOOL_CALL,
-                tool="check_availability",
-                tool_params={
-                    "service_type": collected["service"],
-                    "date_time": f"{collected['date']}T{collected['time']}:00",
-                    "expert_name": collected["expert_name"]
-                }
-            )
-
-        # STEP 8: Handle unavailability
-        if context.get(StateMarker.AVAILABILITY_CHECKED):
-            is_available = context.get(StateMarker.AVAILABLE)
-
-            if not is_available:
-                # Müsait değil - alternative gösterildi mi?
-                if not context.get(StateMarker.ALTERNATIVES_SHOWN):
-                    # Alternative sor
-                    return self._build_action(
-                        action_type=ActionType.ASK_ALTERNATIVE,
-                        message="Bu saat dolu. Alternatif saatler önerelim mi?"
-                    )
-                else:
-                    # Alternative gösterildi ama user seçim yapmadı
-                    # LLM #2'ye bırak (user "hayır" demiş olabilir)
-                    return self._build_action(ActionType.CHAT)
-
-        # STEP 9: Confirm
-        if context.get(StateMarker.AVAILABLE) and not context.get(StateMarker.CONFIRMED):
-            return self._build_action(
-                action_type=ActionType.CONFIRM,
-                message=get_booking_confirmation_message(collected)
-            )
-
-        # STEP 10: Create appointment (tool call)
+        # Onay alındıysa randevuyu oluştur
         if context.get(StateMarker.CONFIRMED):
-            return self._build_action(
-                action_type=ActionType.TOOL_CALL,
-                tool="create_appointment",
-                tool_params={
-                    "customer_phone": collected["phone"],
-                    "service_type": collected["service"],
-                    "appointment_datetime": f"{collected['date']}T{collected['time']}:00",
-                    "expert_name": collected["expert_name"]
-                }
-            )
+            tool_params = {
+                "customer_phone": collected["phone"],
+                "service_type": collected["service"],
+                "appointment_datetime": f"{collected['date']}T{collected['time']}:00",
+                "expert_name": collected.get("expert_name", "any"),
+            }
+            if context.get("is_new_customer") and collected.get("name"):
+                 tool_params["customer_name"] = collected["name"]
 
-        # Fallback - bu noktaya normalde gelmemeli
-        self.logger.warning("⚠️ Booking flow unexpected state")
+            return self._build_action(action_type=ActionType.TOOL_CALL, tool="create_appointment", tool_params=tool_params)
+
+        # Fallback
+        self.logger.debug("Booking flow: Fallback to CHAT")
         return self._build_action(ActionType.CHAT)
 
     # ========================================================================
@@ -239,6 +215,8 @@ class FlowManager:
         if context.get(StateMarker.APPOINTMENTS_FETCHED) and not context.get(StateMarker.CONFIRMED):
             # En son randevuyu iptal etmek için onay iste
             latest_appointment = context.get("latest_appointment")
+            context["confirmation_pending"] = True
+            context["last_intent"] = FlowType.CANCEL
             return self._build_action(
                 action_type=ActionType.CONFIRM,
                 message=get_cancel_confirmation_message(collected, latest_appointment)
