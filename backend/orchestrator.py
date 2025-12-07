@@ -1,26 +1,7 @@
 """
 Orchestrator - Ana İş Akışı Yöneticisi
-GPU STT ile entegre
+Google Cloud STT ile entegre
 """
-
-import os
-# ⚠️ KRİTİK: cuDNN bypass ve GPU ayarları - TÜM import'lardan ÖNCE!
-os.environ['CUDA_MODULE_LOADING'] = 'LAZY'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# PyTorch'un cuDNN kütüphanelerini PATH'e ekle
-import torch
-torch_lib_path = os.path.join(os.path.dirname(torch.__file__), 'lib')
-
-# Windows PATH'e ekle (CTranslate2 için)
-if torch_lib_path not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = torch_lib_path + os.pathsep + os.environ.get('PATH', '')
-    
-# Ek olarak DLL directory'ye de ekle
-try:
-    os.add_dll_directory(torch_lib_path)
-except (OSError, AttributeError):
-    pass
 
 import logging
 import io
@@ -29,23 +10,20 @@ import json
 import threading
 import copy
 import tempfile
+import os
 
-# --- YENİ: PROAKTİF GPU STT BAŞLATMA ---
-# Diğer tüm uygulama import'larından ÖNCE STT servisini import edip başlatıyoruz.
-# Bu, GPU'nun doğru kütüphaneler tarafından (PyTorch/faster-whisper) ilk olarak
-# "rezerve edilmesini" sağlar ve cuDNN çakışmalarını önler.
-logging.info("🚀 GPU STT servisi proaktif olarak başlatılıyor...")
-from stt_service_gpu import get_stt_service
+# --- YENİ: GOOGLE CLOUD STT BAŞLATMA ---
+# Google Cloud Speech-to-Text servisini başlatıyoruz
+logging.info("🚀 Google Cloud STT servisi başlatılıyor...")
+from stt_service_google import get_stt_service
 try:
-    gpu_stt_service = get_stt_service()
-    logging.info("✅ GPU STT servisi başarıyla başlatıldı ve hazır!")
+    stt_service = get_stt_service()
+    logging.info("✅ Google Cloud STT servisi başarıyla başlatıldı ve hazır!")
 except Exception as e:
-    logging.critical(f"❌ FATAL: GPU STT servisi başlatılamadı! Uygulama durduruluyor. Hata: {e}", exc_info=True)
-    # Eğer STT kritikse, burada uygulamayı durdurmak en sağlıklısıdır.
-    # raise RuntimeError("GPU STT servisi başlatılamadığı için uygulama başlatılamadı.") from e
-    gpu_stt_service = None # Veya hata durumunda None olarak ayarla
+    logging.critical(f"❌ FATAL: Google Cloud STT servisi başlatılamadı! Hata: {e}", exc_info=True)
+    stt_service = None
 
-# --- BİTTİ: PROAKTİF GPU STT BAŞLATMA ---
+# --- BİTTİ: GOOGLE CLOUD STT BAŞLATMA ---
 
 
 from agents.orchestrator_agent import OrchestratorAgent
@@ -126,13 +104,12 @@ class FileSessionStore:
 # --- BİTTİ: Dosya tabanlı, thread-safe oturum yönetimi ---
 
 
-def get_gpu_stt():
-    """Önceden başlatılmış GPU STT servisini al (singleton)."""
-    if gpu_stt_service is None:
-        # Bu artık bir hata durumudur çünkü servisin başlangıçta yüklenmesi gerekir.
-        logging.error("Hata: GPU STT servisi başlangıçta yüklenemediği için kullanılamıyor.")
-        raise RuntimeError("GPU STT servisi mevcut değil veya başlangıçta başlatılamadı.")
-    return gpu_stt_service
+def get_stt():
+    """Önceden başlatılmış Google Cloud STT servisini al (singleton)."""
+    if stt_service is None:
+        logging.error("Hata: Google Cloud STT servisi başlangıçta yüklenemediği için kullanılamıyor.")
+        raise RuntimeError("Google Cloud STT servisi mevcut değil veya başlangıçta başlatılamadı.")
+    return stt_service
 
 # Konuşma durumunu modül seviyesinde ve dosya tabanlı olarak sakla
 conversations = FileSessionStore('conversations.json')
@@ -151,34 +128,34 @@ else:
     logging.info("✅ OrchestratorAgent V3 başlatıldı")
 
 async def process_audio_input(session_id: str, audio_data: bytes, websocket=None) -> str:
-    """Gelen ses verisini işler, GPU ile metne çevirir ve yanıt üretir."""
+    """Gelen ses verisini işler, Google Cloud STT ile metne çevirir ve yanıt üretir."""
     try:
         # Kullanıcıya ses alındığını göster
         if websocket:
             await websocket.send_text(json.dumps({
                 "type": "audio_received",
-                "message": "🚀 GPU ile işleniyor..."
+                "message": "🚀 Google Cloud ile işleniyor..."
             }))
 
-        # GPU STT ile metne çevir (ULTRA HIZLI)
+        # Google Cloud STT ile metne çevir
         try:
-            stt_service = get_gpu_stt() # Önceden yüklenmiş servisi al
-            user_text, process_time = stt_service.transcribe_audio_bytes(audio_data, language="tr")
+            stt = get_stt() # Önceden yüklenmiş servisi al
+            user_text, confidence = stt.transcribe_audio_bytes(audio_data, sample_rate=16000)
 
-            logging.info(f"🎤 GPU STT: '{user_text}' ({process_time:.2f}s)")
+            logging.info(f"🎤 Google Cloud STT: '{user_text}' (güven: {confidence:.2%})")
 
             # Boş veya çok kısa transcript'leri reddet
             if not user_text or len(user_text) < 3:
                 logging.warning(f"⚠️ Boş veya çok kısa ses kaydı: '{user_text}'")
                 return ""
 
-            logging.info(f"Kullanıcı dedi ki (GPU-STT) ({session_id}): {user_text}")
+            logging.info(f"Kullanıcı dedi ki (Cloud-STT) ({session_id}): {user_text}")
 
-        except RuntimeError as e: # get_gpu_stt'den gelebilecek hatayı yakala
-            logging.error(f"❌ GPU STT servisi kullanılamıyor: {e}")
+        except RuntimeError as e: # get_stt'den gelebilecek hatayı yakala
+            logging.error(f"❌ Google Cloud STT servisi kullanılamıyor: {e}")
             return "Üzgünüm, ses tanıma servisi şu an aktif değil."
         except Exception as e:
-            logging.error(f"❌ GPU STT çevrim hatası: {e}", exc_info=True)
+            logging.error(f"❌ Google Cloud STT çevrim hatası: {e}", exc_info=True)
             return "Üzgünüm, sesinizi metne çevirirken bir hata oluştu."
 
         # WebSocket'e transkripti gönder
@@ -190,7 +167,7 @@ async def process_audio_input(session_id: str, audio_data: bytes, websocket=None
             
             # Frontend render süresi: Kullanıcı mesajı ekranda görünsün, sonra AI cevap gelsin
             import asyncio
-            await asyncio.sleep(0.15)  # 150ms - optimize edilmiş (300ms → 150ms)
+            await asyncio.sleep(0.15)  # 150ms - optimize edilmiş
 
         return await process_text_input(session_id, user_text, websocket)
 

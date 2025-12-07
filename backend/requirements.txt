@@ -6,6 +6,7 @@ psycopg2-binary
 python-dotenv
 faster-whisper>=0.10.0
 google-cloud-texttospeech
+google-cloud-speech
 whisper-mic
 fastmcp
 google-generativeai

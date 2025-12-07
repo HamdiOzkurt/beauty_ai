@@ -11,10 +11,6 @@ import os
 # Projenin kök dizinini (backend) Python yoluna ekle
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ⚠️ KRİTİK: CUDA/cuDNN ortamını hazırla - TÜM import'lardan ÖNCE!
-import cuda_setup  # PATH ayarları
-import cudnn_preload  # DLL'leri önceden yükle
-
 import uuid
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response

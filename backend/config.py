@@ -47,7 +47,7 @@ class Settings:
     MAX_CONVERSATION_TURNS: int = 20
     MAX_RETRY_ATTEMPTS: int = 3
     AGENT_TEMPERATURE: float = 0.4
-    AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+    AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
 
     # Ollama
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")

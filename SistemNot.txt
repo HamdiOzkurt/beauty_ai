@@ -3,7 +3,7 @@ sesi algılama ses enerjisine göre çalışacak 0.20 üzerindeki sesler çalı�
 real time sesli cevap verecek
 prompt kısaltıcaz
 
- 
+    
  🎯 Mevcut Mimari Analizi
 
   Ana Akış:
@@ -30,7 +30,7 @@ prompt kısaltıcaz
 
   orchestrator.py:144-151
   beam_size=5  # ← Burası yavaşlatıyor
-  model="small"  # ← "tiny" ile 2x hızlanabilir
+  model="medium"  # ← "tiny" ile 2x hızlanabilir
 
   3. MCP Tool Çağrıları (1-2 saniye - %10-15)
 
