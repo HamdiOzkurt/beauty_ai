@@ -28,11 +28,11 @@ class OrchestratorAgent:
         self.model = genai.GenerativeModel(
             settings.AGENT_MODEL,
             generation_config={
-                "temperature": 0.3,  # Daha kararlı JSON için düşürdük
+                "temperature": 0.2,  # Daha ciddi olması için sıcaklığı biraz daha düşürdüm
                 "top_p": 0.95,
                 "top_k": 20,
                 "response_mime_type": "application/json", # Gemini'ye JSON zorlaması
-                "max_output_tokens": 300
+                "max_output_tokens": 1500
             }
         )
         self.conversations = conversations
@@ -186,7 +186,7 @@ class OrchestratorAgent:
         # Müşteri ismi bilgisi (context'ten)
         customer_greeting = ""
         if context.get("customer_name"):
-            customer_greeting = f"\n### 👤 CUSTOMER xNFO ###\nRegistered Customer Name: {context['customer_name']}\n**IMPORTANT:** Always address this customer by their name (e.g., 'Merhaba {context['customer_name']}' or '{context['customer_name']} Hanım/Bey'). Be warm and personal!\n"
+            customer_greeting = f"\n### 👤 CUSTOMER INFO ###\nRegistered Customer Name: {context['customer_name']}\n**IMPORTANT:** Always address this customer by their name (e.g., 'Merhaba {context['customer_name']}' or '{context['customer_name']} Hanım/Bey').\n"
         
         # Kampanya bilgilerini prompt'a ekle
         campaign_info = ""
@@ -201,9 +201,15 @@ class OrchestratorAgent:
 """
 
         # --- V3.2 PROMPT - Refactored & Compact ---
-        prompt = f"""### ROLE & GOAL ###
-You are a Beauty Center AI Orchestrator. Your goal is to manage conversations, extract information, plan tool usage, and respond to the user.
-Your output MUST be a single JSON object. The 'ask_user' field must be in natural, warm, and concise Turkish.
+        # BURADA HARİKA KELİMESİNİ ENGELLEYEN KISIM GÜNCELLENDİ
+        prompt = f"""### ROLE AND GOAL ###
+You are a professional Beauty Spa AI Orchestrator. Your goal is to manage conversations, extract information, plan tool usage, and respond to the user.
+Your output MUST be a single JSON object. The 'ask_user' field should be in natural, polite, and concise Turkish.
+
+### STYLE & TONE GUIDELINES ###
+1. **NO OVER-ENTHUSIASM:** NEVER start sentences with excitement words like "Harika", "Süper", "Mükemmel", "Şahane".
+2. **PROFESSIONALISM:** Be polite, direct, and helpful. Use a calm and welcoming tone.
+3. **FORMAT:** Keep the `ask_user` response short and clear.
 
 ### CORE DATA ###
 - Current Date: {today.strftime('%Y-%m-%d %H:%M')}
@@ -218,37 +224,34 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
 - Summary: {state_display}
 - Raw JSON: {json.dumps(current_state, ensure_ascii=False)}
 
-### ⚠️ CORE DIRECTIVES (MUST FOLLOW) ###
-1.  **MEMORY IS KEY**: NEVER ask for information already present in "CURRENT STATE". Always check the Raw JSON first.
-2.  **BOOKING FLOW**:
-    a. Get `phone` (05xxxxxxxxx format).
-    b. Immediately use `customer_agent.check_customer` to get the customer's name. Greet them personally.
-    c. Get `service`.
-    d. Get `expert_name`. If missing, use `booking_agent.list_experts` and ask user to choose.
-    e. Get `date` (YYYY-MM-DD) and `time` (HH:MM).
-    f. Use `booking_agent.check_availability`. **CRITICAL**: If user gives booking details (date/time/expert) before phone, run `check_availability` FIRST. ALWAYS include `expert_name` if user mentioned one.
-    g. If unavailable, ask user if they want alternatives. If user says YES ("evet", "tabii", "öner", "bekliyorum"), immediately use `booking_agent.suggest_alternative_times` with current service, date, and expert_name from state.
-    h. Once all info is collected and availability is confirmed, ask for final confirmation.
-    i. On confirmation, use `booking_agent.create_appointment`.
-3.  **INTENT ROUTING**:
-    - **Greetings/General Info/Price**: Classify as `chat` or use `list_services` for prices. DO NOT start the booking flow.
-    - **Booking/Cancellation**: Follow the booking flow or use cancellation tools.
-    - **Info Request (experts, services)**: Use `list_experts` or `list_services`.
-    - **Query Appointment**: Use `customer_agent.get_customer_appointments`.
-4.  **TOOLS**:
-    - `booking_agent`: create_appointment, cancel_appointment, check_availability, suggest_alternative_times, list_experts, list_services.
-    - `customer_agent`: check_customer, create_customer, get_customer_appointments.
-    - `marketing_agent`: check_campaigns.
+### ⚠️ BASIC GUIDELINES (MUST-FOLLOW) ###
+1. **MEMORY IS KEY**: NEVER ask for information already in the "CURRENT STATUS". Always check the raw JSON first.
+2. **BOOK FLOW**:
+a. Get the `phone` (in the format 05xxxxxxxxx). If `name` is missing, ask for it politely to create a record.
+b. Get the `service` command.
+c. Get the `expert_name` command. If missing, use the `booking_agent.list_experts` command and ask the user to choose.
+d. Get `date` (YYYY-MM-DD) and `time` (HH:MM).
+e. Use the `booking_agent.check_availability` command. **CRITICAL**: If the user provides details, run `check_availability` FIRST.
+f. If unavailable, ask for alternatives. If user agrees, use `booking_agent.suggest_alternative_times`.
+g. Once confirmed, use `booking_agent.create_appointment`.
+3. **INTENT FORWARDING**:
+- **Greetings/General**: Classify as `chat` or use `list_services`.
+- **Booking**: Follow the booking flow.
+- **Appointment Inquiry**: Use `customer_agent.get_customer_appointments`.
+4. **TOOLS**:
+- `booking_agent`: create_appointment, cancel_appointment, check_availability, suggest_alternative_times, expert_list, service_list.
+- `customer_agent`: check_customer, create_customer, get_customer_appointments.
+- `marketing_agent`: campaign_control_set.
 
 ### JSON OUTPUT FORMAT ###
 {{
-  "extracted": {{ "date": "YYYY-MM-DD", "time": "HH:MM", "service": "string", "expert_name": "string" }},
-  "plan": {{
-    "action": "chat" | "inform_missing" | "confirm" | "execute_tool",
-    "missing_info": ["field_name"],
-    "ask_user": "A natural Turkish response for the user. Plain string, no JSON/Markdown.",
-    "steps": [ {{ "agent": "agent_name", "operation": "tool_name", "params": {{}} }} ]
-  }}
+"extracted": {{ "date": "YYYY-MM-DD", "time": "HH:MM", "service": "string", "expert_name": "string" }},
+"plan": {{
+"action": "chat" | "inform_missing" | "confirm" | "execute_tool",
+"missing_info": ["alan_adı"],
+"ask_user": "A natural, professional Turkish response. Do NOT start with 'Harika'.",
+"steps": [ {{ "agent": "agent_name", "operation": "tool_name", "params": {{}} }} ]
+}}
 }}
 
 ### USER INPUT ###
@@ -257,20 +260,67 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
 
         try:
             response = self.model.generate_content(prompt)
-            # JSON temizliği
-            raw = response.text.strip().replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
+            raw = ""
+            if response.candidates:
+                # Check for safety ratings
+                if response.prompt_feedback and response.prompt_feedback.safety_ratings:
+                    for rating in response.prompt_feedback.safety_ratings:
+                        if rating.block_reason: 
+                            logging.warning(f"⚠️ Model yanıtı güvenlik nedeniyle engellendi: Kategori={rating.category}, Nedeni={rating.block_reason}")
+                            return {
+                                "extracted": {},
+                                "plan": {
+                                    "action": "chat",
+                                    "ask_user": "Üzgünüm, isteğinizi işlerken bir sorun oluştu. Daha basit sorabilir misiniz?",
+                                    "steps": []
+                                }
+                            }
+                try:
+                    raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+                except ValueError as ve:
+                    logging.error(f"❌ Model yanıtından metin alınamadı: {ve}")
+                    return {
+                        "extracted": {},
+                        "plan": {
+                            "action": "chat",
+                            "ask_user": "İsteğinizi tam olarak anlayamadım, tekrar eder misiniz?",
+                            "steps": []
+                        }
+                    }
+            else:
+                logging.error(f"❌ Model yanıtı boş döndü.")
+                return {
+                    "extracted": {},
+                    "plan": {
+                        "action": "chat",
+                        "ask_user": "Şu an yanıt veremiyorum, lütfen tekrar deneyin.",
+                        "steps": []
+                    }
+                }
+            
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError as json_e:
+                logging.error(f"❌ JSON Parse Hatası: {json_e}")
+                logging.error(f"❌ RAW: {raw}")
+                return {
+                    "extracted": {},
+                    "plan": {
+                        "action": "chat",
+                        "ask_user": "Bir hata oluştu, lütfen tekrar deneyin.",
+                        "steps": []
+                    }
+                }
             
             # Validation
             if "extracted" not in result: result["extracted"] = {}
-            if "plan" not in result: result["plan"] = {"action": "chat", "ask_user": "Anlaşılamadı, tekrar eder misiniz?", "steps": []}
+            if "plan" not in result: result["plan"] = {"action": "chat", "ask_user": "Anlaşılamadı.", "steps": []}
             
             logging.info(f"🎯 V3 Plan: {result['plan']['action']} | Msg: {result['plan'].get('ask_user')}")
             return result
-            
+
         except Exception as e:
             logging.error(f"Unified call hatası: {e}", exc_info=True)
-            # Fallback
             return {
                 "extracted": {},
                 "plan": {
@@ -288,42 +338,33 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
         for res in results.values():
             if not isinstance(res, dict): continue
             
-            # Müşteri verisi güncelleme
             if "customer" in res and "phone" in res["customer"]:
                 context["customer_phone"] = res["customer"]["phone"]
                 collected["phone"] = res["customer"]["phone"]
                 if "name" in res["customer"]:
                     context["customer_name"] = res["customer"]["name"]
             
-            # 🆕 Randevu bilgilerini kaydet (get_customer_appointments sonucu)
             if "appointments" in res and res.get("appointments"):
-                # İlk (en güncel) randevuyu kaydet
                 latest_apt = res["appointments"][0]
                 collected["appointment_id"] = latest_apt.get("id")
                 collected["appointment_date"] = latest_apt.get("date")
                 collected["appointment_service"] = latest_apt.get("service")
-                # Notes içinde randevu kodu olabilir
                 notes = latest_apt.get("notes", "")
                 if notes:
                     collected["appointment_code"] = notes
-                logging.info(f"📋 Randevu bilgisi kaydedildi: ID={latest_apt.get('id')}, Kod={notes}")
+                logging.info(f"📋 Randevu bilgisi kaydedildi: ID={latest_apt.get('id')}")
             
-            # 🆕 Kampanya bilgilerini kaydet (check_campaigns sonucu)
             if "campaigns" in res and res.get("success"):
                 campaigns = res.get("campaigns", [])
                 if campaigns:
                     context["active_campaigns"] = campaigns
-                    # İlk kampanyanın detaylarını kolay erişim için ayrı tut
                     first_campaign = campaigns[0]
                     context["campaign_name"] = first_campaign.get("name")
                     context["campaign_discount"] = first_campaign.get("discount")
                     context["campaign_end_date"] = first_campaign.get("end_date")
-                    logging.info(f"🎁 Kampanya bilgisi kaydedildi: {first_campaign.get('name')} - %{first_campaign.get('discount')} (Bitiş: {first_campaign.get('end_date')})")
 
     async def process_request(self, session_id: str, user_message: str, websocket=None) -> str:
-        """
-        Ana İşlem Akışı - V3.2 Memory-Fixed
-        """
+        """Ana İşlem Akışı"""
         logging.info(f"\n{'='*50}\n🎯 İSTEK: {user_message}\n{'='*50}")
 
         conv = self.conversations.get(session_id)
@@ -331,87 +372,56 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
             conv = {"context": {}, "collected": {}, "history": []}
             self.conversations[session_id] = conv
         
-        # ⚠️ ÖNCE KULLANICI MESAJINI HISTORY'YE EKLE
         conv["history"].append({"role": "user", "content": user_message})
         
-        # Debug: Önceki state
-        logging.info(f"📥 Mevcut collected (işlem öncesi): {json.dumps(conv.get('collected', {}), ensure_ascii=False)}")
-        
-        # 1. Regex (Ön Hazırlık)
         regex_info = self._extract_info_with_regex(user_message)
         conv["collected"].update({k:v for k,v in regex_info.items() if v})
         
-        # Debug: Güncellenen state
-        logging.info(f"📤 Güncel collected (regex sonrası): {json.dumps(conv['collected'], ensure_ascii=False)}")
-
-        # 2. AI Unified Call (Tek Çağrı)
         unified = await self._extract_and_plan_unified(user_message, conv)
         
-        # Çıkarılan yeni bilgileri kaydet
         new_extracted = unified.get("extracted", {})
         for k, v in new_extracted.items():
             if v and v != "null" and v != "": 
                 conv["collected"][k] = v
         
-        # ⚠️ SON STATE'İ LOGLA
         logging.info(f"🧠 FINAL COLLECTED STATE: {json.dumps(conv['collected'], ensure_ascii=False)}")
             
         plan = unified.get("plan", {})
         action = plan.get("action")
         
-        # ⚠️ ask_user ALAN TEMİZLEME (Geliştirilmiş)
         response_text = plan.get("ask_user", "")
         response_text = self._clean_llm_response(response_text)
         
-        # 3. Aksiyon Yönetimi
-        
-        # DURUM A: Sadece Konuşma veya Eksik Bilgi İsteme (Tool çalıştırmaya gerek yok)
         if action in ["chat", "inform_missing", "confirm"] and not plan.get("steps"):
-            # Model zaten cevabı üretti, direkt dön
             await self._send_response(response_text, conv, websocket, session_id)
             return response_text
             
-        # DURUM B: Tool Çalıştırma (Veritabanı işlemleri, Müsaitlik kontrolü vb.)
         if action == "execute_tool" or plan.get("steps"):
-            
-            # Parametreleri tamamla (Phone eksikse context'ten al)
             for step in plan["steps"]:
                 if "customer_phone" not in step.get("params", {}) and conv["collected"].get("phone"):
                     step["params"]["customer_phone"] = conv["collected"]["phone"]
                 
-                # check_campaigns için customer_phone opsiyonel, yoksa None gönder
                 if step.get("operation") == "check_campaigns" and "customer_phone" not in step.get("params", {}):
                     step["params"]["customer_phone"] = conv["collected"].get("phone")
                 
-                # Eğer operation check_availability ise ve service_type eksikse, collected'dan tamamla
                 if step.get("operation") == "check_availability" and \
                    "service_type" not in step.get("params", {}) and \
                    conv["collected"].get("service"):
                     step["params"]["service_type"] = conv["collected"]["service"]
-                
-                # Expert name düzeltme (Model bazen 'Ayşe' gönderir, 'Ayşe Yılmaz' gerekir mi bakılabilir)
-                # Burası agent içinde handle ediliyor varsayıyoruz.
 
-            # Planı uygula
             results = await self._execute_plan(plan, conv)
             self._update_context(results, conv)
-            
-            # Tool sonuçlarına göre yeni bir cevap üretmemiz gerekebilir
-            # Eğer model 'ask_user' vermişse ve işlem başarılıysa onu kullan,
-            # ama genellikle tool sonucuna göre (örn: "Randevu kodunuz: XYZ") dinamik cevap gerekir.
             
             final_response = await self._generate_tool_response(user_message, plan, results, conv)
             await self._send_response(final_response, conv, websocket, session_id)
             return final_response
 
-        # Fallback (Hiçbir şeye girmezse)
         await self._send_response(response_text, conv, websocket, session_id)
         return response_text
 
     async def _execute_plan(self, plan: Dict, conv: Dict) -> Dict:
         """Agent Toollarını Çalıştır"""
         results = {}
-        # Agent isim haritası (Prompt ismi -> Class instance)
         agent_map = {
             "booking_agent": self.agents["appointment"],
             "customer_agent": self.agents["customer"],
@@ -422,16 +432,12 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
             agent_key = step.get("agent")
             operation = step.get("operation")
             params = step.get("params", {})
-            
-            # 🔧 FIX: Collected state'i params'a ekle (eğer yoksa)
             collected = conv.get("collected", {})
             
-            # check_customer için telefon ekle
             if operation == "check_customer":
                 if "phone" not in params and collected.get("phone"):
                     params["phone"] = collected["phone"]
             
-            # create_customer için isim ve telefon ekle
             if operation == "create_customer":
                 if "phone" not in params and collected.get("phone"):
                     params["phone"] = collected["phone"]
@@ -441,17 +447,14 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
                     elif collected.get("full_name"):
                         params["full_name"] = collected["full_name"]
             
-            # check_availability için tarih/saat bilgisini ekle
             if operation == "check_availability":
                 if "date" not in params and collected.get("date"):
                     params["date"] = collected["date"]
                 if "date_time" not in params and collected.get("date") and collected.get("time"):
-                    # ISO format: YYYY-MM-DDTHH:MM:SS
                     params["date_time"] = f"{collected['date']}T{collected['time']}:00"
                 if "expert_name" not in params and collected.get("expert_name"):
                     params["expert_name"] = collected["expert_name"]
             
-            # suggest_alternative_times için parametreleri ekle
             if operation == "suggest_alternative_times":
                 if "service_type" not in params and collected.get("service"):
                     params["service_type"] = collected["service"]
@@ -460,14 +463,12 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
                 if "expert_name" not in params and collected.get("expert_name"):
                     params["expert_name"] = collected["expert_name"]
             
-            # create_appointment için tüm bilgileri ekle
             if operation == "create_appointment":
                 if "customer_phone" not in params and collected.get("phone"):
                     params["customer_phone"] = collected["phone"]
                 if "service_type" not in params and collected.get("service"):
                     params["service_type"] = collected["service"]
                 if "appointment_datetime" not in params and collected.get("date") and collected.get("time"):
-                    # ISO format: YYYY-MM-DDTHH:MM:SS
                     params["appointment_datetime"] = f"{collected['date']}T{collected['time']}:00"
                 if "expert_name" not in params and collected.get("expert_name"):
                     params["expert_name"] = collected["expert_name"]
@@ -479,15 +480,10 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
                 
             try:
                 logging.info(f"▶ ÇALIŞTIRILIYOR: {agent_key}.{operation} | Params: {params}")
-                
-                # Agent'ın beklediği format ("task" yapısı)
                 task_payload = {"task": operation, "parameters": params}
-                
-                # Execute
                 result = await agent.execute(task_payload, conv)
                 results[f"{operation}"] = result
                 logging.info(f"✅ Sonuç: {result.get('success')}")
-                
             except Exception as e:
                 logging.error(f"❌ Tool hatası: {e}", exc_info=True)
                 results[f"{operation}_error"] = {"success": False, "error": str(e)}
@@ -497,18 +493,14 @@ Your output MUST be a single JSON object. The 'ask_user' field must be in natura
     async def _generate_tool_response(self, user_msg: str, plan: Dict, results: Dict, conv: Dict) -> str:
         """
         Tool (Araç) sonuçlarını yorumlayıp kullanıcıya nihai yanıtı üretir.
-        Örnek: Database'den 'success: True' döndüyse -> "Randevunuz oluşturuldu."
+        BURADA 'HARİKA' DEMESİ ENGELLENDİ.
         """
         
-        # Context'ten ve sonuçlardan özet bilgi çıkar
         context_summary = {
             "customer_name": conv["context"].get("customer_name"),
             "tool_outputs": results
         }
 
-        # Eğer sonuçlarda hata varsa logla
-        has_error = any("error" in str(v).lower() for k, v in results.items())
-        
         prompt = f"""### RESPONSE GENERATION ###
 ROLE: Beauty Center Assistant.
 GOAL: Create a short and natural Turkish response based on TOOL RESULTS.
@@ -522,28 +514,23 @@ CONTEXT:
 {json.dumps(context_summary, ensure_ascii=False)}
 
 RULES:
-1. **APPOINTMENT CREATED:** If result has 'success': true and a 'code', say: "Harika! Randevunuz oluşturuldu. Randevu Kodunuz: [CODE]. Sizi bekliyoruz!"
+1. **APPOINTMENT CREATED:** If result has 'success': true and a 'code', say: "Randevunuz başarıyla oluşturuldu. Randevu Kodunuz: [CODE]. Sizi bekliyoruz!" (DO NOT start with 'Harika').
 2. **QUERY APPOINTMENTS:** If result has 'appointments' array:
-   - If array is EMPTY or has 0 items: "Kayıtlı randevunuz bulunmuyor."
-   - If array has items with status='confirmed': List them with date, time, service and expert. DO NOT mention cancelled appointments.
-   - NEVER say "iptal edilmiş" or "cancelled" for appointments with status='confirmed'!
-3. **ALTERNATIVE TIMES:** If the result is an 'alternatives' array, concisely list up to 3 options and the nearest available time:
-   - "5 Aralık: 09:00, 11:30, 14:00 müsait. Hangisini tercih edersiniz?" (max 1 sentence!)
-   - DO NOT list same time that user requested!
-   - DO NOT repeat dates, just list times.
-4. **AVAILABILITY:** If result lists 'slots' or 'times', list them clearly but concisely (e.g., "Sabah 09:00 ve 10:30 müsait").
-5. **EXPERTS:** If result lists experts, say: "Şu uzmanlarımız hizmet veriyor: [Expert Names]. Hangisini tercih edersiniz?"
-6. **ERROR:** If 'success': false, apologize politely and ask for missing info or suggest an alternative.
-7. **TONE:** Warm, professional, NO emojis. Max 2 sentences.
-8. NO NESTED JSON: The 'ask_user' field must be a PLAIN STRING. NEVER wrap the user response in curly braces {{}}, JSON objects (like {{"response": "..."}}), or labels. Just write the natural Turkish sentence directly.
-OUTPUT (A plain, natural Turkish String ONLY. NEVER wrap the user response in JSON, curly braces, or labels):"""
+   - If array is EMPTY: "Kayıtlı randevunuz bulunmuyor."
+   - If array has confirmed items: List them with date, time, service and expert.
+3. **ALTERNATIVE TIMES:** List options concisely (e.g., "5 Aralık: 09:00, 11:30 müsait.").
+4. **AVAILABILITY:** List slots clearly.
+5. **EXPERTS:** "Şu uzmanlarımız hizmet veriyor: [Names]. Hangisini tercih edersiniz?"
+6. **ERROR:** If 'success': false, apologize politely.
+7. **TONE:** Professional, polite, helpful. NO generic excitement words like "Harika", "Süper".
+8. **OUTPUT:** A plain, natural Turkish String ONLY.
+
+OUTPUT (Plain text only):"""
 
         try:
-            # Tool sonuçlarını yorumlaması için LLM'e gönderiyoruz
             response = self.model.generate_content(prompt)
             response_text = response.text.strip()
             
-            # JSON formatında geldiyse parse et ve sadece mesajı al
             try:
                 response_json = json.loads(response_text)
                 if isinstance(response_json, dict) and "response" in response_json:
@@ -554,49 +541,32 @@ OUTPUT (A plain, natural Turkish String ONLY. NEVER wrap the user response in JS
             return response_text
         except Exception as e:
             logging.error(f"Tool yanıtı oluşturma hatası: {e}")
-            # Fallback (Acil durum) mesajları
             if "create_appointment" in json.dumps(results):
                 return "İşleminizi gerçekleştirdim, sistemimize kaydettim."
-            return "Şu anda işleminizi tamamlamaya çalışıyorum ancak ufak bir gecikme var. Lütfen bekleyin."
+            return "İşleminizi tamamlarken bir gecikme oldu, lütfen bekleyin."
 
     async def _send_response(self, text: str, conv: Dict, websocket, session_id: str = None):
-        """
-        Cevabı kaydeder ve WebSocket üzerinden (varsa) gönderir.
-        ⚠️ User mesajı artık process_request'te ekleniyor!
-        """
-        # ⚠️ SADECE ASSISTANT CEVABINI EKLE (User mesajı zaten process_request'te eklendi)
+        """Cevabı kaydeder ve WebSocket üzerinden gönderir."""
         conv["history"].append({"role": "assistant", "content": text})
         
-        # Geçmişin şişmesini engelle (Son 20 mesaj - 10 soru/cevap)
         if len(conv["history"]) > 20:
             conv["history"] = conv["history"][-20:]
         
-        # Debug log
         logging.info(f"💬 HISTORY COUNT: {len(conv['history'])}")
-        logging.info(f"📝 LAST 4 MESSAGES: {conv['history'][-4:]}")
         
-        # ⚠️ KRİTİK: Session'ı burada da kaydet (her response'dan önce)
         if session_id:
             self.conversations[session_id] = conv
-            logging.debug(f"💾 Session kaydedildi: {session_id}")
             
-        # WebSocket Gönderimi
         if websocket:
             try:
-                # Metin tabanlı gönderim (Frontend'de TTS için kullanılabilir)
                 await websocket.send_text(text)
-                
-                # Akışın bittiğini belirten sinyal
                 await websocket.send_text(json.dumps({"type": "stream_end"}))
-                
                 logging.info(f"📤 Yanıt gönderildi: {text[:100]}...")
             except Exception as e:
                 logging.error(f"WebSocket gönderim hatası: {e}")
 
-    # --- YARDIMCI METODLAR (Update) ---
-
     def _reset_conversation(self, session_id: str):
-        """Oturumu sıfırlamak gerekirse (örn: "başa dön" dediğinde)"""
+        """Oturumu sıfırla"""
         self.conversations[session_id] = {
             "context": {},
             "collected": {},
