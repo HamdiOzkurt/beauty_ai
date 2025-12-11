@@ -140,7 +140,7 @@ async def process_audio_input(session_id: str, audio_data: bytes, websocket=None
         # Google Cloud STT ile metne çevir
         try:
             stt = get_stt() # Önceden yüklenmiş servisi al
-            user_text, confidence = stt.transcribe_audio_bytes(audio_data, sample_rate=16000)
+            user_text, confidence = stt.transcribe_audio_bytes(audio_data)  # Auto-detect format & sample rate
 
             logging.info(f"🎤 Google Cloud STT: '{user_text}' (güven: {confidence:.2%})")
 

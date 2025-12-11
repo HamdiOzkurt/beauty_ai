@@ -6,8 +6,9 @@ from dotenv import load_dotenv
 # Proje kök dizini
 BASE_DIR = Path(__file__).resolve().parent
 
-# .env dosyasını yükle
-load_dotenv()
+# .env dosyasını yükle (backend dizininden)
+env_path = BASE_DIR / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
     """Uygulama ayarları"""
@@ -62,6 +63,11 @@ class Settings:
 
 # Global settings instance
 settings = Settings()
+
+# Explicitly set GOOGLE_APPLICATION_CREDENTIALS environment variable
+# This ensures the Google Cloud client can find the credentials
+if settings.GOOGLE_APPLICATION_CREDENTIALS:
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = settings.GOOGLE_APPLICATION_CREDENTIALS
 
 # NOT: SERVICE_DURATIONS, EXPERTS, CAMPAIGNS artık burada değil.
 # Bu verilere ihtiyaç duyulduğunda Repository katmanı üzerinden Directus'tan çekilmeli

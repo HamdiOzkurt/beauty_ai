@@ -14,7 +14,7 @@ let audioChunks = [];
 let isRecording = false;
 let silenceTimeout;
 let recordingStartTime = 0;
-const WEBSOCKET_URL = "ws://localhost:8001/api/ws/v1/chat";
+const WEBSOCKET_URL = "ws://localhost:8002/api/ws/v2/chat";
 const SILENCE_DURATION = 2000; // 2 saniye sessizlik
 const SILENCE_THRESHOLD = 3; // Sessizlik eşiği (daha yüksek = daha az hassas)
 const MIN_RECORDING_DURATION = 500; // Minimum 500ms kayıt süresi
@@ -32,42 +32,49 @@ function connectWebSocket() {
 
     websocket.onmessage = (event) => {
         const response = event.data;
-        
-        // JSON mesaj mı kontrol et (transcript için)
+
+        // JSON mesaj mı kontrol et
         try {
             const data = JSON.parse(response);
-            
+
             if (data.type === 'audio_received') {
                 // Ses alındı bilgisi - görsel feedback
                 console.log('🎤 Ses alındı, işleniyor...');
                 return;
-            } else if (data.type === 'transcript') {
+            } else if (data.type === 'transcript' || data.type === 'transcription') {
                 // Kullanıcı mesajını HEMEN göster
-                addMessage('user', data.text);
-                console.log('📝 Transcript alındı:', data.text);
+                const text = data.text || data.content;
+                addMessage('user', text);
+                console.log('📝 Transcript alındı:', text);
+                return;
+            } else if (data.type === 'text') {
+                // Backend2: AI text response
+                addMessage('assistant', data.content);
+                console.log('🤖 AI yanıtı:', data.content);
+                return;
+            } else if (data.type === 'audio') {
+                // Backend2: TTS audio (base64)
+                console.log('🔊 Audio alındı, çalınıyor...');
+                playBase64Audio(data.content);
                 return;
             } else if (data.type === 'stream_end') {
-                // Streaming bitti, Google TTS ile çal
-                if (window.currentAssistantMessage && window.currentAssistantMessage.bubbleDiv) {
-                    const fullText = window.currentAssistantMessage.bubbleDiv.textContent;
-                    
-                    // Google TTS kullan (backend API)
-                    playGoogleTTS(fullText);
-                }
+                // Streaming bitti
+                console.log('✅ Stream tamamlandı');
                 window.currentAssistantMessage = null;
+                return;
+            } else if (data.type === 'error') {
+                // Hata mesajı
+                console.error('❌ Hata:', data.content);
+                addMessage('assistant', data.content);
                 return;
             }
         } catch (e) {
-            // JSON değilse normal streaming chunk
+            // JSON değilse normal streaming chunk (backend v1 için)
+            if (!window.currentAssistantMessage) {
+                window.currentAssistantMessage = addMessage('assistant', '', true);
+            }
+            appendToMessage(window.currentAssistantMessage, response);
         }
-        
-        // İlk chunk geldiğinde yeni bir asistan mesajı oluştur
-        if (!window.currentAssistantMessage) {
-            window.currentAssistantMessage = addMessage('assistant', '', true);
-        }
-        
-        // Chunk'ı mevcut mesaja ekle
-        appendToMessage(window.currentAssistantMessage, response);
     };
 
     websocket.onclose = () => {
@@ -307,39 +314,58 @@ voiceButton.addEventListener('contextmenu', (e) => {
 // Initialize
 connectWebSocket();
 
-// Google TTS Fonksiyonu
+// Base64 Audio Çalma Fonksiyonu (Backend2 için)
+function playBase64Audio(base64Audio) {
+    try {
+        // Base64'ü binary'ye çevir
+        const binaryString = atob(base64Audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Audio blob oluştur ve çal
+        const audioBlob = new Blob([bytes], { type: 'audio/mp3' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+
+        audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+        };
+
+        audio.play();
+        console.log('🔊 TTS audio çalınıyor');
+
+    } catch (error) {
+        console.error('Audio çalma hatası:', error);
+    }
+}
+
+// Google TTS Fonksiyonu (Backend v1 için - fallback)
 async function playGoogleTTS(text) {
     try {
         const response = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, {
             method: 'POST'
         });
-        
+
         if (!response.ok) {
             console.error('TTS hatası:', response.statusText);
-            // Fallback: Browser TTS
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'tr-TR';
-            window.speechSynthesis.speak(utterance);
             return;
         }
-        
+
         // Audio blob al ve çal
         const audioBlob = await response.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
-        
+
         audio.onended = () => {
             URL.revokeObjectURL(audioUrl);
         };
-        
+
         audio.play();
         console.log('🎤 Google TTS çalınıyor');
-        
+
     } catch (error) {
         console.error('TTS çalma hatası:', error);
-        // Fallback: Browser TTS
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'tr-TR';
-        window.speechSynthesis.speak(utterance);
     }
 }

@@ -4,7 +4,7 @@ echo Web Server Baslatiliyor...
 echo ========================================
 
 rem Proje kok dizininde kal
-call .\myenv\Scripts\activate.bat
+call .\venv\Scripts\activate.bat
 
 echo [2/2] Web server baslatiliyor...
 echo Calisma dizini: %cd%

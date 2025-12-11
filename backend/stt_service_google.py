@@ -21,52 +21,69 @@ class GoogleSTTService:
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
                 language_code="tr-TR",
-                # Model seçimi: command_and_search = kısa komutlar için optimize
-                # default = genel amaçlı
-                # phone_call = telefon görüşmeleri için (bizim case'imiz)
-                model="phone_call",
-                # Alternatif transkriptler için (en iyi 3 sonucu al)
+                # Model seçimi:
+                # - command_and_search = kısa komutlar için optimize
+                # - default = genel amaçlı (Türkçe için önerilen)
+                # - phone_call = telefon görüşmeleri için (Türkçe desteklenmiyor)
+                model="default",
+                # Alternatif transkriptler için (en iyi sonucu al)
                 max_alternatives=1,
                 # Noktalama işaretleri ekle
                 enable_automatic_punctuation=True,
                 # Profanity filtreleme (isteğe bağlı)
                 profanity_filter=False,
-                # Konuşmacı diarizasyonu (kim konuşuyor) - isteğe bağlı
-                enable_speaker_diarization=False,
-                # Kelime zaman damgaları
-                enable_word_time_offsets=False,
+                # Konuşmacı diarizasyonu (kim konuşuyor) - API bu sürümde desteklemiyor
+                # enable_speaker_diarization=False,
+                # Kelime zaman damgaları - API bu sürümde desteklemiyor
+                # enable_word_time_offsets=False,
             )
-            
-            logging.info("✅ Google Cloud Speech-to-Text başlatıldı (Türkçe/phone_call modeli)")
+
+            logging.info("✅ Google Cloud Speech-to-Text başlatıldı (Türkçe/default modeli)")
             
         except Exception as e:
             logging.error(f"❌ Google STT başlatılamadı: {e}")
             raise
     
-    def transcribe_audio_bytes(self, audio_bytes: bytes, sample_rate: int = 16000) -> tuple[str, float]:
+    def transcribe_audio_bytes(self, audio_bytes: bytes, sample_rate: int = None) -> tuple[str, float]:
         """
         Ses dosyasını metne çevir (synchronous - kısa sesler için)
-        
+
         Args:
-            audio_bytes: WAV formatında ses verisi (PCM 16-bit)
-            sample_rate: Örnekleme hızı (Hz)
-            
+            audio_bytes: Ses verisi (WebM Opus veya WAV PCM formatında)
+            sample_rate: Örnekleme hızı (Hz) - None ise otomatik algılanır
+
         Returns:
             (metin, güven_skoru) tuple
         """
         try:
-            # Sample rate'i güncelle
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=sample_rate,
-                language_code="tr-TR",
-                model="phone_call",
-                max_alternatives=1,
-                enable_automatic_punctuation=True,
-            )
-            
+            # WebM formatını algıla
+            is_webm = audio_bytes[:4] == b'\x1a\x45\xdf\xa3'  # WebM magic number
+
+            if is_webm:
+                # WebM Opus için config - sample rate belirtmeye gerek yok, header'dan alır
+                config = speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+                    language_code="tr-TR",
+                    # phone_call modeli Türkçe için desteklenmiyor, default kullan
+                    model="default",
+                    max_alternatives=1,
+                    enable_automatic_punctuation=True,
+                )
+            else:
+                # PCM/WAV için config
+                if sample_rate is None:
+                    sample_rate = 16000  # Varsayılan
+                config = speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=sample_rate,
+                    language_code="tr-TR",
+                    model="default",
+                    max_alternatives=1,
+                    enable_automatic_punctuation=True,
+                )
+
             audio = speech.RecognitionAudio(content=audio_bytes)
-            
+
             # Synchronous tanıma (1 dakikaya kadar)
             response = self.client.recognize(config=config, audio=audio)
             

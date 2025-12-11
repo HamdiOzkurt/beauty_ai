@@ -14,7 +14,7 @@ class BaseAgent(ABC):
         self.capabilities = capabilities
         self.memory = []
         # FastMCP SSE endpoint
-        self.mcp_url = f"http://{settings.MCP_SERVER_HOST}:{settings.MCP_SERVER_PORT}/mcp/sse"
+        self.mcp_url = f"http://{settings.MCP_SERVER_HOST}:{settings.MCP_SERVER_PORT}/mcp"
     
     # <-- DEĞİŞİKLİK 1: Metodun imzasına 'conversation' parametresi eklendi.
     # Bu, tüm alt agent sınıflarının bu yeni yapıyı uygulamasını zorunlu kılar.
