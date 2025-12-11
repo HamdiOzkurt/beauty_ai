@@ -35,7 +35,7 @@ def check_customer(phone: str) -> str:
             }, ensure_ascii=False)
 
         # Randevu sayısını hesapla
-        appointments = customer_repo.get_appointments_directus(customer.id, limit=100)
+        appointments = customer_repo.get_appointments(customer.id, limit=100)
         total_appointments = len(appointments)
 
         customer_info = {

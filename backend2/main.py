@@ -66,20 +66,26 @@ app.add_middleware(
 # ============================================================================
 
 class GoogleSTTService:
-    """Google Cloud Speech-to-Text service"""
+    """Google Cloud Speech-to-Text service with streaming support"""
 
     def __init__(self):
         try:
             self.client = speech.SpeechClient()
+            # Batch STT için config
             self.config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
                 language_code="tr-TR",
-                model="default",  # phone_call Türkçe için desteklenmiyor
+                model="default",
                 max_alternatives=1,
                 enable_automatic_punctuation=True,
             )
-            logger.info("✅ Google STT initialized (tr-TR/default model)")
+            # Streaming STT için config
+            self.streaming_config = speech.StreamingRecognitionConfig(
+                config=self.config,
+                interim_results=True  # Anlık sonuçları al (daha iyi tanıma)
+            )
+            logger.info("✅ Google STT initialized (tr-TR/streaming mode)")
         except Exception as e:
             logger.error(f"❌ STT initialization failed: {e}")
             raise
@@ -127,6 +133,68 @@ class GoogleSTTService:
 
         except Exception as e:
             logger.error(f"STT error: {e}", exc_info=True)
+            return "", 0.0
+
+    def transcribe_audio_streaming(self, audio_bytes: bytes, sample_rate: int = 16000) -> tuple:
+        """
+        Streaming transcription - Daha iyi Türkçe tanıma için interim_results kullanır.
+        Verdiğiniz örnekteki gibi streaming API kullanır.
+
+        Args:
+            audio_bytes: Ses verisi (PCM LINEAR16 formatında)
+            sample_rate: Örnekleme oranı (varsayılan: 16000)
+
+        Returns:
+            (transcript, confidence) tuple
+        """
+        try:
+            # Streaming config
+            streaming_config = speech.StreamingRecognitionConfig(
+                config=speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=sample_rate,
+                    language_code="tr-TR",
+                    model="default",
+                    enable_automatic_punctuation=True,
+                ),
+                interim_results=True  # Anlık sonuçlar - daha iyi tanıma!
+            )
+
+            # Audio'yu chunk'lara böl (streaming için)
+            chunk_size = int(sample_rate / 10)  # 100ms chunks
+
+            def audio_generator():
+                """Audio bytes'ı chunk'lara bölerek yield eder"""
+                for i in range(0, len(audio_bytes), chunk_size * 2):  # *2 çünkü 16-bit = 2 bytes
+                    yield speech.StreamingRecognizeRequest(
+                        audio_content=audio_bytes[i:i + chunk_size * 2]
+                    )
+
+            # Streaming recognize
+            responses = self.client.streaming_recognize(streaming_config, audio_generator())
+
+            # En son final result'ı al
+            transcript = ""
+            confidence = 0.0
+
+            for response in responses:
+                if not response.results:
+                    continue
+
+                result = response.results[0]
+                if not result.alternatives:
+                    continue
+
+                # is_final=True olan sonuçları topla
+                if result.is_final:
+                    transcript = result.alternatives[0].transcript
+                    confidence = result.alternatives[0].confidence
+                    logger.info(f"🎤 STT (streaming): {transcript} (confidence: {confidence:.2f})")
+
+            return transcript, confidence
+
+        except Exception as e:
+            logger.error(f"Streaming STT error: {e}", exc_info=True)
             return "", 0.0
 
 
@@ -271,8 +339,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
 
-                # Auto-detect format and sample rate
-                user_message, confidence = stt.transcribe_audio_bytes(audio_bytes)
+                # Streaming STT kullan (daha iyi Türkçe tanıma)
+                # WebM ise batch, PCM ise streaming
+                is_webm = audio_bytes[:4] == b'\x1a\x45\xdf\xa3'
+
+                if is_webm:
+                    # WebM için batch mode (streaming desteklemiyor)
+                    user_message, confidence = stt.transcribe_audio_bytes(audio_bytes)
+                    logger.info(f"🎤 WebM format detected, using batch STT")
+                else:
+                    # PCM için streaming mode (daha iyi tanıma!)
+                    user_message, confidence = stt.transcribe_audio_streaming(audio_bytes)
+                    logger.info(f"🎤 PCM format detected, using streaming STT")
 
                 if not user_message:
                     await websocket.send_json({
@@ -320,6 +398,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 "timestamp": datetime.utcnow().isoformat()
             })
 
+            # History boyutu kontrolü - Çok büyürse eski mesajları sil
+            if len(conversation["history"]) > 50:
+                # Son 30 mesajı tut, eski 20'yi sil
+                removed_count = len(conversation["history"]) - 30
+                conversation["history"] = conversation["history"][-30:]
+                logger.warning(f"🧹 History too large! Removed {removed_count} old messages. Current size: {len(conversation['history'])}")
+
             # Stream agent response
             agent_response_text = ""
 
@@ -328,7 +413,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     user_message=user_message,
                     session_id=session_id,
                     collected_info=conversation["collected_info"],
-                    context=conversation["context"]
+                    context=conversation["context"],
+                    history=conversation["history"]
                 ):
                     # Extract messages from event
                     if "agent" in event:
@@ -352,6 +438,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                             customer = tool_result["customer"]
                                             conversation["context"]["customer_name"] = customer.get("name")
                                             conversation["context"]["customer_phone"] = customer.get("phone")
+                                            conversation["collected_info"]["customer_phone"] = customer.get("phone")
 
                                         if "code" in tool_result:
                                             conversation["collected_info"]["appointment_code"] = tool_result["code"]
@@ -360,6 +447,16 @@ async def websocket_endpoint(websocket: WebSocket):
                                             conversation["context"]["campaigns"] = tool_result["campaigns"]
                                 except:
                                     pass
+
+                    # Mesajdan hizmet/tarih bilgisi çıkar (basit keyword matching)
+                    # Bu bilgileri collected_info'ya ekle ki AI sonraki adımlarda kullansın
+                    user_msg_lower = user_message.lower()
+                    services_keywords = ["cilt bakımı", "saç kesimi", "pedikür", "manikür"]
+                    for service in services_keywords:
+                        if service in user_msg_lower:
+                            conversation["collected_info"]["service"] = service
+                            logger.info(f"📝 Service detected and saved: {service}")
+                            break
 
             except Exception as e:
                 logger.error(f"Agent stream error: {e}", exc_info=True)
@@ -479,7 +576,8 @@ async def chat_endpoint(request: dict):
         user_message=message,
         session_id=session_id,
         collected_info=conversation["collected_info"],
-        context=conversation["context"]
+        context=conversation["context"],
+        history=conversation["history"]
     )
 
     return {

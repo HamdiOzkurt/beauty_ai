@@ -32,9 +32,80 @@ def normalize_turkish(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def parse_time_from_text(text: str) -> Optional[int]:
+    """
+    Metinden saat çıkarır.
+    Örnekler: "saat 2'de" → 14, "14:00" → 14, "saat ikide" → 14
+    """
+    text_lower = text.lower().strip()
+
+    # Sayısal saat: "14:00", "14.00", "14"
+    time_pattern = r'(\d{1,2})[:\.]?(\d{2})?'
+    match = re.search(time_pattern, text)
+    if match:
+        hour = int(match.group(1))
+        # Saat 1-12 arası ise ve "öğleden sonra" varsa +12
+        if 1 <= hour <= 12:
+            if 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
+                hour += 12
+        return hour if 0 <= hour <= 23 else None
+
+    # Yazılı saatler
+    number_words = {
+        'bir': 1, 'iki': 2, 'üç': 3, 'uc': 3, 'dört': 4, 'dort': 4,
+        'beş': 5, 'bes': 5, 'altı': 6, 'alti': 6, 'yedi': 7,
+        'sekiz': 8, 'dokuz': 9, 'on': 10, 'on bir': 11, 'on iki': 12
+    }
+
+    for word, num in number_words.items():
+        if word in text_lower and ('saat' in text_lower or 'de' in text_lower):
+            hour = num
+            # Öğleden sonra kontrolü
+            if 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
+                if hour < 12:
+                    hour += 12
+            return hour
+
+    return None
+
+
 def parse_turkish_date(date_str: str) -> Optional[datetime]:
-    """Türkçe tarih formatlarını parse eder."""
-    current_year = datetime.now().year
+    """
+    Türkçe tarih formatlarını parse eder.
+    Desteklenen formatlar:
+    - "bugün", "yarın", "öbür gün"
+    - "pazartesi", "salı", "önümüzdeki cuma"
+    - "15 aralık", "3 ocak"
+    - "2024-12-15", "15.12.2024"
+    """
+    date_str_lower = date_str.lower().strip()
+    now = datetime.now()
+    current_year = now.year
+
+    # Özel kelimeler: bugün, yarın, öbür gün
+    if 'bugün' in date_str_lower or 'bugun' in date_str_lower:
+        return now
+    if 'yarın' in date_str_lower or 'yarin' in date_str_lower:
+        return now + timedelta(days=1)
+    if 'öbür gün' in date_str_lower or 'obur gun' in date_str_lower or 'ertesi gün' in date_str_lower:
+        return now + timedelta(days=2)
+
+    # Gün isimleri (pazartesi, salı, etc.)
+    turkish_days = {
+        'pazartesi': 0, 'salı': 1, 'sali': 1, 'çarşamba': 2, 'carsamba': 2,
+        'perşembe': 3, 'persembe': 3, 'cuma': 4, 'cumartesi': 5, 'pazar': 6
+    }
+
+    for day_name, day_num in turkish_days.items():
+        if day_name in date_str_lower:
+            # Bugünün gün numarası
+            current_day = now.weekday()
+            # Hedef güne kadar gün sayısı
+            days_ahead = (day_num - current_day) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # Önümüzdeki haftaya git
+            target_date = now + timedelta(days=days_ahead)
+            return target_date
 
     # ISO format
     try:
@@ -56,12 +127,13 @@ def parse_turkish_date(date_str: str) -> Optional[datetime]:
 
     # "3 aralık" gibi Türkçe format
     tr_months = {
-        'ocak': 1, 'şubat': 2, 'mart': 3, 'nisan': 4,
-        'mayıs': 5, 'haziran': 6, 'temmuz': 7, 'ağustos': 8,
-        'eylül': 9, 'ekim': 10, 'kasım': 11, 'aralık': 12
+        'ocak': 1, 'şubat': 2, 'subat': 2, 'mart': 3, 'nisan': 4,
+        'mayıs': 5, 'mayis': 5, 'haziran': 6, 'temmuz': 7,
+        'ağustos': 8, 'agustos': 8, 'eylül': 9, 'eylul': 9,
+        'ekim': 10, 'kasım': 11, 'kasim': 11, 'aralık': 12, 'aralik': 12
     }
     pattern = r'(\d{1,2})\s*([a-züğışöç]+)'
-    match = re.search(pattern, date_str.lower())
+    match = re.search(pattern, date_str_lower)
     if match:
         day = int(match.group(1))
         month_name = match.group(2)
@@ -83,7 +155,7 @@ def check_availability(
 
     Args:
         service_type: Hizmet adı (örn: "saç kesimi", "manikür")
-        date: Tarih (YYYY-MM-DD, DD.MM.YYYY veya "3 aralık" formatında)
+        date: Tarih ve saat (doğal dil: "yarın saat 2'de", "15 aralık", "pazartesi saat 10'da")
         expert_name: Uzman adı (opsiyonel, verilmezse tüm uzmanlar kontrol edilir)
 
     Returns:
@@ -97,8 +169,14 @@ def check_availability(
         if not requested_time:
             return json.dumps({
                 "success": False,
-                "error": "Geçersiz tarih formatı. YYYY-MM-DD veya DD.MM.YYYY kullanın."
+                "error": "Tarih anlaşılamadı. Lütfen tekrar söyler misiniz?"
             }, ensure_ascii=False)
+
+        # Saat bilgisi varsa ekle
+        hour = parse_time_from_text(date)
+        if hour is not None:
+            requested_time = requested_time.replace(hour=hour, minute=0, second=0)
+            logger.info(f"[check_availability] Parsed time: {requested_time}")
 
         # Hizmet bilgilerini al
         service_repo = ServiceRepository()
@@ -209,7 +287,7 @@ def create_appointment(
     customer_name: str,
     service_type: str,
     date: str,
-    time: str,
+    time: str = "",
     expert_name: Optional[str] = None
 ) -> str:
     """
@@ -219,8 +297,8 @@ def create_appointment(
         customer_phone: Müşteri telefon numarası (05xxxxxxxxx formatında)
         customer_name: Müşteri adı soyadı
         service_type: Hizmet adı
-        date: Tarih (YYYY-MM-DD)
-        time: Saat (HH:MM)
+        date: Tarih (doğal dil: "yarın", "15 aralık", "pazartesi")
+        time: Saat (doğal dil: "saat 2'de", "14:00", opsiyonel - date içinde olabilir)
         expert_name: Uzman adı (opsiyonel)
 
     Returns:
@@ -229,20 +307,28 @@ def create_appointment(
     try:
         logger.info(f"[create_appointment] phone={customer_phone}, service={service_type}, date={date}, time={time}")
 
-        # Tarih-saat birleştir
-        appointment_datetime_str = f"{date} {time}"
-        appointment_time = None
+        # Tarihi parse et (date + time birleşik de olabilir)
+        full_date_string = f"{date} {time}".strip()
+        appointment_time = parse_turkish_date(full_date_string)
 
-        try:
-            appointment_time = datetime.strptime(appointment_datetime_str, '%Y-%m-%d %H:%M')
-        except:
-            try:
-                appointment_time = datetime.strptime(appointment_datetime_str, '%d.%m.%Y %H:%M')
-            except:
-                return json.dumps({
-                    "success": False,
-                    "error": "Geçersiz tarih/saat formatı."
-                }, ensure_ascii=False)
+        if not appointment_time:
+            return json.dumps({
+                "success": False,
+                "error": "Tarih anlaşılamadı."
+            }, ensure_ascii=False)
+
+        # Saat bilgisini parse et
+        hour = parse_time_from_text(full_date_string)
+        if hour is not None:
+            appointment_time = appointment_time.replace(hour=hour, minute=0, second=0)
+        else:
+            # Saat belirtilmemişse hata
+            return json.dumps({
+                "success": False,
+                "error": "Lütfen randevu saatini belirtir misiniz?"
+            }, ensure_ascii=False)
+
+        logger.info(f"[create_appointment] Parsed datetime: {appointment_time}")
 
         # Hizmet bilgilerini al
         service_repo = ServiceRepository()
