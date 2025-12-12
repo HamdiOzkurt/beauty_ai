@@ -340,7 +340,6 @@ def get_or_create_conversation(session_id: str) -> dict:
             "collected_info": {},
             "context": {},
             "history": [],
-            "off_topic_count": 0,
             "created_at": datetime.utcnow().isoformat()
         }
     return conversations[session_id]
@@ -532,8 +531,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_id=session_id,
                     collected_info=conversation["collected_info"],
                     context=conversation["context"],
-                    history=conversation["history"],
-                    off_topic_count=conversation.get("off_topic_count", 0)
+                    history=conversation["history"]
                 ):
                     # Extract messages from event
                     if "agent" in event:
@@ -542,10 +540,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             last_msg = messages[-1]
                             if hasattr(last_msg, "content") and last_msg.content:
                                 agent_response_text = last_msg.content
-
-                        # Update off_topic_count from agent state
-                        if "off_topic_count" in event["agent"]:
-                            conversation["off_topic_count"] = event["agent"]["off_topic_count"]
 
                     # Extract tool results
                     if "tools" in event:
@@ -712,8 +706,7 @@ async def chat_endpoint(request: dict):
         session_id=session_id,
         collected_info=conversation["collected_info"],
         context=conversation["context"],
-        history=conversation["history"],
-        off_topic_count=conversation.get("off_topic_count", 0)
+        history=conversation["history"]
     )
 
     return {

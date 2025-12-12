@@ -50,9 +50,17 @@ def parse_time_from_text(text: str) -> Optional[int]:
 
     if match:
         hour = int(match.group(1))
-        # Saat 1-12 arası ise ve "öğleden sonra" varsa +12
+        # Saat 1-12 arası ise AM/PM kontrolü yap
         if 1 <= hour <= 12:
-            if 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
+            # Açıkça sabah/gece belirtilmişse sabah olarak al
+            if 'sabah' in text_lower or 'gece' in text_lower:
+                # Sabah/gece olarak bırak (değiştirme)
+                pass
+            # Açıkça öğleden sonra/akşam belirtilmişse +12
+            elif 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
+                hour += 12
+            # Hiçbir şey belirtilmemişse ve saat 8'den küçükse muhtemelen öğleden sonra
+            elif hour < 8:
                 hour += 12
         return hour if 0 <= hour <= 23 else None
 
@@ -66,9 +74,16 @@ def parse_time_from_text(text: str) -> Optional[int]:
     for word, num in number_words.items():
         if word in text_lower and ('saat' in text_lower or 'de' in text_lower):
             hour = num
-            # Öğleden sonra kontrolü
-            if 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
-                if hour < 12:
+            # AM/PM kontrolü
+            if 1 <= hour <= 12:
+                # Açıkça sabah/gece belirtilmişse sabah olarak al
+                if 'sabah' in text_lower or 'gece' in text_lower:
+                    pass
+                # Açıkça öğleden sonra/akşam belirtilmişse +12
+                elif 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
+                    hour += 12
+                # Hiçbir şey belirtilmemişse ve saat 8'den küçükse muhtemelen öğleden sonra
+                elif hour < 8:
                     hour += 12
             return hour
 
@@ -263,11 +278,18 @@ def check_availability(
                     expert_name=None
                 )
 
+                logger.info(f"[check_availability] DEBUG: Found {len(slots_with_experts)} total slots")
+                logger.info(f"[check_availability] DEBUG: Requested hour: {requested_time.hour}")
+                for slot, expert in slots_with_experts[:5]:  # İlk 5 slot'u göster
+                    logger.info(f"[check_availability] DEBUG: Slot: {slot.strftime('%Y-%m-%d %H:%M')}, Expert: {expert}")
+
                 # O saatte müsait olan var mı kontrol et
                 available_at_time = [
                     (slot, expert) for slot, expert in slots_with_experts
                     if slot.hour == requested_time.hour
                 ]
+
+                logger.info(f"[check_availability] DEBUG: Matching slots at hour {requested_time.hour}: {len(available_at_time)}")
 
                 if available_at_time:
                     experts_available = [expert for _, expert in available_at_time]

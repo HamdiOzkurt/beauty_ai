@@ -329,6 +329,10 @@ class AppointmentRepository(BaseRepository):
         expert_repo = ExpertRepository()
         experts = expert_repo.list_all(service_name=service_type)
 
+        logger.info(f"[find_available_slots_for_day] DEBUG: Found {len(experts)} experts for service '{service_type}'")
+        for exp in experts:
+            logger.info(f"[find_available_slots_for_day] DEBUG: Expert: {exp.first_name} {exp.last_name} (ID: {exp.id})")
+
         # Filter by expert name if specified
         if expert_name:
             experts = [e for e in experts if expert_name.lower() in f"{e.first_name} {e.last_name}".lower()]
@@ -371,6 +375,7 @@ class AppointmentRepository(BaseRepository):
 
             potential_slot += timedelta(minutes=settings.APPOINTMENT_SLOT_MINUTES)
 
+        logger.info(f"[find_available_slots_for_day] DEBUG: Total available slots found: {len(available_slots)}")
         return available_slots
 
     def create_appointment(

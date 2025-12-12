@@ -32,8 +32,6 @@ class AgentState(TypedDict):
     collected_info: dict
     # Kontekst bilgileri (müşteri adı, kampanya bilgileri)
     context: dict
-    # Off-topic (alakasız) sorgu sayacı
-    off_topic_count: int
 
 
 # ============================================================================
@@ -74,6 +72,7 @@ Diğer durumlar:
 - "Hangi hizmetler?" → list_services
 - "Hangi uzmanlar?" → list_experts
 - Randevu oluştur → create_appointment, SONRA MUTLAKA check_campaigns çağır, TEK mesajda her ikisini de söyle
+- randevu olusturuken hangi uzman olacaksa musteriden bu bilgiyi al ve almadan randevu olusturma
 - Kampanya sorulursa → check_campaigns
 
 ## Kişilik (TTS için)
@@ -82,8 +81,8 @@ Diğer durumlar:
 - "Harika", "Süper" kullanma
 - ASLA markdown kullanma (**, *, vb.) - Sadece düz metin
 
-## TARİH ANLAMA
-"yarın", "15 aralık", "pazartesi" → Tool'a AYNEN gönder, çevirme!
+## TARİH bilgisini direk tool gonder
+
 
 ## TOOL SONRASI
 Tool sonucunu oku, müşteriye aktar. Boş cevap verme!
@@ -161,25 +160,7 @@ def call_model(state: AgentState) -> AgentState:
 
         logger.info(f"[call_model] Response: {response.content[:100] if response.content else 'Tool calls'}")
 
-        # Off-topic counter kontrolü: Tool kullanılmadıysa +1
-        has_tool_calls = hasattr(response, 'tool_calls') and response.tool_calls
-        current_count = state.get("off_topic_count", 0)
-
-        if not has_tool_calls:
-            new_count = current_count + 1
-            logger.info(f"[call_model] No tool calls, off_topic_count: {current_count} -> {new_count}")
-
-            # 3. alakasız soruda sonlandırma mesajı
-            if new_count >= 3:
-                logger.warning(f"[call_model] Off-topic limit reached, sending farewell message")
-                farewell = AIMessage(content="Üzgünüm, size yardımcı olamıyorum. Lütfen güzellik merkeziyle doğrudan iletişime geçin.")
-                return {"messages": [farewell], "off_topic_count": new_count}
-
-            return {"messages": [response], "off_topic_count": new_count}
-        else:
-            # Tool kullanıldı, counter'ı sıfırla
-            logger.info(f"[call_model] Tool calls detected, resetting off_topic_count")
-            return {"messages": [response], "off_topic_count": 0}
+        return {"messages": [response]}
 
     except Exception as e:
         logger.error(f"[call_model] Error: {e}", exc_info=True)
@@ -260,7 +241,7 @@ agent_graph = create_graph()
 # Helper Functions
 # ============================================================================
 
-def invoke_agent(user_message: str, session_id: str, collected_info: dict = None, context: dict = None, history: list = None, off_topic_count: int = 0) -> str:
+def invoke_agent(user_message: str, session_id: str, collected_info: dict = None, context: dict = None, history: list = None) -> str:
     """
     Agent'ı invoke eder (tek seferlik).
 
@@ -296,8 +277,7 @@ def invoke_agent(user_message: str, session_id: str, collected_info: dict = None
     initial_state = {
         "messages": message_history,
         "collected_info": collected_info or {},
-        "context": context or {},
-        "off_topic_count": off_topic_count
+        "context": context or {}
     }
 
     config = {"configurable": {"thread_id": session_id}}
@@ -312,7 +292,7 @@ def invoke_agent(user_message: str, session_id: str, collected_info: dict = None
     return str(last_message)
 
 
-async def stream_agent(user_message: str, session_id: str, collected_info: dict = None, context: dict = None, history: list = None, off_topic_count: int = 0):
+async def stream_agent(user_message: str, session_id: str, collected_info: dict = None, context: dict = None, history: list = None):
     """
     Agent'ı stream modunda çalıştırır (async).
 
@@ -348,8 +328,7 @@ async def stream_agent(user_message: str, session_id: str, collected_info: dict 
     initial_state = {
         "messages": message_history,
         "collected_info": collected_info or {},
-        "context": context or {},
-        "off_topic_count": off_topic_count
+        "context": context or {}
     }
 
     config = {"configurable": {"thread_id": session_id}}
