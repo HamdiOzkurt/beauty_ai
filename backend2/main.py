@@ -32,6 +32,8 @@ else:
 
 # Google Cloud imports (STT/TTS) - AFTER setting credentials
 from google.cloud import speech, texttospeech
+from google.api_core.exceptions import DeadlineExceeded
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -71,21 +73,41 @@ class GoogleSTTService:
     def __init__(self):
         try:
             self.client = speech.SpeechClient()
-            # Batch STT için config
+
+            # Özel kelimeler (randevu, hizmetler için)
+            # Bu kelimeler daha iyi tanınacak
+            speech_contexts = speech.SpeechContext(
+                phrases=[
+                    "randevu", "randevu almak", "randevu oluştur",
+                    "cilt bakımı", "saç kesimi", "pedikür", "manikür",
+                    "yarın", "bugün", "pazartesi", "salı", "çarşamba", "perşembe", "cuma", "cumartesi", "pazar",
+                    "saat", "müsait", "dolu", "uygun", "uzman", "kampanya",
+                    "telefon numarası", "isim", "soyisim"
+                ],
+                boost=15.0  # Bu kelimeleri daha çok önceliklendir
+            )
+
+            # EN İYİ Config - Enhanced model kullan
             self.config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
                 language_code="tr-TR",
-                model="default",
-                max_alternatives=1,
+                model="latest_long",  # En yeni, en iyi model
+                use_enhanced=False,  # Premium model - %30 daha iyi doğruluk!
+                max_alternatives=2,  # 2 alternatif al, en iyisini seç
                 enable_automatic_punctuation=True,
+                enable_spoken_punctuation=True,  # Noktalama işaretlerini sesli söylenirse tanı
+                enable_spoken_emojis=False,
+                profanity_filter=False,  # Randevu sisteminde gerek yok
+                speech_contexts=[speech_contexts],  # Özel kelimeler
+                enable_word_confidence=True  # Kelime bazında güven skoru
             )
             # Streaming STT için config
             self.streaming_config = speech.StreamingRecognitionConfig(
                 config=self.config,
                 interim_results=True  # Anlık sonuçları al (daha iyi tanıma)
             )
-            logger.info("✅ Google STT initialized (tr-TR/streaming mode)")
+            logger.info("✅ Google STT initialized (tr-TR/enhanced+latest_long model)")
         except Exception as e:
             logger.error(f"❌ STT initialization failed: {e}")
             raise
@@ -97,25 +119,50 @@ class GoogleSTTService:
             is_webm = audio_bytes[:4] == b'\x1a\x45\xdf\xa3'  # WebM magic number
 
             if is_webm:
-                # WebM Opus config - sample rate auto-detected from header
+                # WebM Opus config - EN İYİ ayarlar
+                speech_contexts = speech.SpeechContext(
+                    phrases=[
+                        "randevu", "randevu almak", "cilt bakımı", "saç kesimi", "pedikür", "manikür",
+                        "yarın", "bugün", "pazartesi", "salı", "müsait", "dolu", "saat", "uzman"
+                    ],
+                    boost=15.0
+                )
+
                 config = speech.RecognitionConfig(
                     encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
                     language_code="tr-TR",
-                    model="default",
-                    max_alternatives=1,
+                    model="latest_long",  # En iyi model
+                    use_enhanced=False,  # Premium - %30 daha iyi!
+                    max_alternatives=2,
                     enable_automatic_punctuation=True,
+                    enable_spoken_punctuation=True,
+                    speech_contexts=[speech_contexts],
+                    enable_word_confidence=True
                 )
             else:
-                # PCM/WAV config
+                # PCM/WAV config - EN İYİ ayarlar
                 if sample_rate is None:
                     sample_rate = 16000
+
+                speech_contexts = speech.SpeechContext(
+                    phrases=[
+                        "randevu", "randevu almak", "cilt bakımı", "saç kesimi", "pedikür", "manikür",
+                        "yarın", "bugün", "pazartesi", "salı", "müsait", "dolu", "saat", "uzman"
+                    ],
+                    boost=15.0
+                )
+
                 config = speech.RecognitionConfig(
                     encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                     sample_rate_hertz=sample_rate,
                     language_code="tr-TR",
-                    model="default",
-                    max_alternatives=1,
+                    model="latest_long",  # En iyi model
+                    use_enhanced=False,  # Premium - %30 daha iyi!
+                    max_alternatives=2,
                     enable_automatic_punctuation=True,
+                    enable_spoken_punctuation=True,
+                    speech_contexts=[speech_contexts],
+                    enable_word_confidence=True
                 )
 
             audio = speech.RecognitionAudio(content=audio_bytes)
@@ -148,14 +195,28 @@ class GoogleSTTService:
             (transcript, confidence) tuple
         """
         try:
-            # Streaming config
+            # Özel kelimeler
+            speech_contexts = speech.SpeechContext(
+                phrases=[
+                    "randevu", "randevu almak", "cilt bakımı", "saç kesimi", "pedikür", "manikür",
+                    "yarın", "bugün", "pazartesi", "salı", "müsait", "dolu", "saat", "uzman"
+                ],
+                boost=15.0
+            )
+
+            # Streaming config - EN İYİ ayarlar
             streaming_config = speech.StreamingRecognitionConfig(
                 config=speech.RecognitionConfig(
                     encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                     sample_rate_hertz=sample_rate,
                     language_code="tr-TR",
-                    model="default",
+                    model="latest_long",  # En iyi model
+                    use_enhanced=False,  # Premium - %30 daha iyi!
+                    max_alternatives=2,
                     enable_automatic_punctuation=True,
+                    enable_spoken_punctuation=True,
+                    speech_contexts=[speech_contexts],
+                    enable_word_confidence=True
                 ),
                 interim_results=True  # Anlık sonuçlar - daha iyi tanıma!
             )
@@ -279,6 +340,7 @@ def get_or_create_conversation(session_id: str) -> dict:
             "collected_info": {},
             "context": {},
             "history": [],
+            "off_topic_count": 0,
             "created_at": datetime.utcnow().isoformat()
         }
     return conversations[session_id]
@@ -320,14 +382,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Check if it's binary (audio) or text (JSON)
             if "bytes" in message:
+                # ⏱️ Start timing
+                import time
+                t_start = time.time()
+
                 # Binary audio data
                 audio_bytes = message["bytes"]
+                t_audio_received = time.time()
+                logger.info(f"PERF: Audio received at {t_audio_received:.4f}s")
                 logger.info(f"📨 Received binary audio: {len(audio_bytes)} bytes")
 
                 # Get conversation state
                 conversation = get_or_create_conversation(session_id)
 
                 # STT: Convert audio to text
+                t_stt_start = time.time()
+                logger.info(f"PERF: STT started at {t_stt_start:.4f}s")
                 stt = get_stt_service()
                 if not stt:
                     logger.error("STT service is not available.")
@@ -349,8 +419,54 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🎤 WebM format detected, using batch STT")
                 else:
                     # PCM için streaming mode (daha iyi tanıma!)
-                    user_message, confidence = stt.transcribe_audio_streaming(audio_bytes)
                     logger.info(f"🎤 PCM format detected, using streaming STT")
+                    
+                    DEADLINE_SECONDS = 1.0
+                    final_transcript = ""
+                    confidence = 0.0
+
+                    try:
+                        # Audio'yu chunk'lara böl (streaming için)
+                        chunk_size = int(16000 / 10)  # 100ms chunks
+
+                        def audio_generator():
+                            """Audio bytes'ı chunk'lara bölerek yield eder"""
+                            for i in range(0, len(audio_bytes), chunk_size * 2):  # *2 çünkü 16-bit = 2 bytes
+                                yield speech.StreamingRecognizeRequest(
+                                    audio_content=audio_bytes[i:i + chunk_size * 2]
+                                )
+                        
+                        responses = stt.client.streaming_recognize(stt.streaming_config, audio_generator(), timeout=DEADLINE_SECONDS * 2)
+                        
+                        for response in responses:
+                            if not response.results:
+                                continue
+
+                            result = response.results[0]
+                            if not result.alternatives:
+                                continue
+
+                            transcript = result.alternatives[0].transcript
+
+                            if result.is_final:
+                                final_transcript = transcript
+                                confidence = result.alternatives[0].confidence
+                                logger.info(f"🎤 STT (final): {final_transcript} (confidence: {confidence:.2f})")
+                            else:
+                                logger.info(f"🎤 STT (interim): {transcript}")
+                        
+                        user_message = final_transcript
+
+                    except DeadlineExceeded:
+                        logger.warning(f"Sessizlik nedeniyle konuşma sonlandırıldı. Son anlaşılan: {final_transcript}")
+                        user_message = final_transcript
+                    except Exception as e:
+                        logger.error(f"Streaming STT error: {e}", exc_info=True)
+                        user_message = ""
+                        confidence = 0.0
+
+                t_stt_end = time.time()
+                logger.info(f"PERF: STT finished at {t_stt_end:.4f}s (duration: {t_stt_end - t_stt_start:.4f}s)")
 
                 if not user_message:
                     await websocket.send_json({
@@ -407,6 +523,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Stream agent response
             agent_response_text = ""
+            t_agent_start = time.time()
+            logger.info(f"PERF: Agent started at {t_agent_start:.4f}s")
 
             try:
                 async for event in stream_agent(
@@ -414,7 +532,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_id=session_id,
                     collected_info=conversation["collected_info"],
                     context=conversation["context"],
-                    history=conversation["history"]
+                    history=conversation["history"],
+                    off_topic_count=conversation.get("off_topic_count", 0)
                 ):
                     # Extract messages from event
                     if "agent" in event:
@@ -423,6 +542,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             last_msg = messages[-1]
                             if hasattr(last_msg, "content") and last_msg.content:
                                 agent_response_text = last_msg.content
+
+                        # Update off_topic_count from agent state
+                        if "off_topic_count" in event["agent"]:
+                            conversation["off_topic_count"] = event["agent"]["off_topic_count"]
 
                     # Extract tool results
                     if "tools" in event:
@@ -461,6 +584,9 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Agent stream error: {e}", exc_info=True)
                 agent_response_text = "Üzgünüm, bir hata oluştu. Lütfen tekrar dener misiniz?"
+            
+            t_agent_end = time.time()
+            logger.info(f"PERF: Agent finished at {t_agent_end:.4f}s (duration: {t_agent_end - t_agent_start:.4f}s)")
 
             # Add to history
             conversation["history"].append({
@@ -479,9 +605,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # TTS: Convert text to audio
             if agent_response_text:
+                t_tts_start = time.time()
+                logger.info(f"PERF: TTS started at {t_tts_start:.4f}s")
                 tts = get_tts_service()
                 if tts:
                     audio_bytes = tts.text_to_speech(agent_response_text)
+                    t_tts_end = time.time()
+                    logger.info(f"PERF: TTS finished at {t_tts_end:.4f}s (duration: {t_tts_end - t_tts_start:.4f}s)")
                     if audio_bytes:
                         import base64
                         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
@@ -492,6 +622,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             "session_id": session_id,
                             "timestamp": datetime.utcnow().isoformat()
                         })
+                        t_audio_sent = time.time()
+                        logger.info(f"PERF: Audio sent at {t_audio_sent:.4f}s")
+
                 else:
                     logger.warning("TTS service is not available, skipping audio generation.")
 
@@ -501,6 +634,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 "session_id": session_id,
                 "timestamp": datetime.utcnow().isoformat()
             })
+            t_end = time.time()
+            logger.info(f"PERF: Total request time: {t_end - t_start:.4f}s")
 
     except WebSocketDisconnect:
         logger.info(f"🔌 WebSocket disconnected: {session_id}")
@@ -577,7 +712,8 @@ async def chat_endpoint(request: dict):
         session_id=session_id,
         collected_info=conversation["collected_info"],
         context=conversation["context"],
-        history=conversation["history"]
+        history=conversation["history"],
+        off_topic_count=conversation.get("off_topic_count", 0)
     )
 
     return {

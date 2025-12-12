@@ -39,9 +39,15 @@ def parse_time_from_text(text: str) -> Optional[int]:
     """
     text_lower = text.lower().strip()
 
-    # Sayısal saat: "14:00", "14.00", "14"
-    time_pattern = r'(\d{1,2})[:\.]?(\d{2})?'
-    match = re.search(time_pattern, text)
+    # Önce "saat" kelimesinden sonra sayı ara
+    saat_pattern = r'saat\s+(\d{1,2})[:\.]?(\d{2})?'
+    match = re.search(saat_pattern, text_lower)
+
+    # Bulunamazsa genel sayısal saat formatı ara (ama sadece saat formatında: XX:XX veya XX.XX)
+    if not match:
+        time_pattern = r'(\d{1,2})[:\.](\d{2})'
+        match = re.search(time_pattern, text)
+
     if match:
         hour = int(match.group(1))
         # Saat 1-12 arası ise ve "öğleden sonra" varsa +12
@@ -224,29 +230,61 @@ def check_availability(
         # Belirli saat verilmişse o saati kontrol et
         appointment_repo = AppointmentRepository()
 
-        if expert_id and requested_time.hour != 0:
+        # DÜZELTME: Saat belirtilmişse (uzman yoksa bile) o saati kontrol et
+        if requested_time.hour != 0:
             # Belirli saat için kontrol
-            is_available = appointment_repo.check_availability(
-                expert_id=expert_id,
-                start_time=requested_time,
-                duration_minutes=duration
-            )
+            if expert_id:
+                # Uzman belirtilmişse sadece o uzmanı kontrol et
+                is_available = appointment_repo.check_availability(
+                    expert_id=expert_id,
+                    start_time=requested_time,
+                    duration_minutes=duration
+                )
 
-            if not is_available:
-                return json.dumps({
-                    "success": True,
-                    "available": False,
-                    "message": f"{normalized_expert_name} uzmanımızın {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde başka randevusu var."
-                }, ensure_ascii=False)
+                if not is_available:
+                    return json.dumps({
+                        "success": True,
+                        "available": False,
+                        "message": f"{normalized_expert_name} uzmanımızın {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde başka randevusu var."
+                    }, ensure_ascii=False)
+                else:
+                    return json.dumps({
+                        "success": True,
+                        "available": True,
+                        "message": f"{normalized_expert_name} uzmanımız {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde müsait.",
+                        "available_slots": {requested_time.strftime('%H:%M'): [normalized_expert_name]}
+                    }, ensure_ascii=False)
             else:
-                return json.dumps({
-                    "success": True,
-                    "available": True,
-                    "message": f"{normalized_expert_name} uzmanımız {requested_time.strftime('%d.%m.%Y %H:%M')} saatinde müsait.",
-                    "available_slots": {requested_time.strftime('%H:%M'): [normalized_expert_name]}
-                }, ensure_ascii=False)
+                # Uzman belirtilmemişse o saat için müsait uzmanları bul
+                slots_with_experts = appointment_repo.find_available_slots_for_day(
+                    service_type=service_type,
+                    day=requested_time.date(),
+                    duration_minutes=duration,
+                    expert_name=None
+                )
 
-        # Tüm gün için müsaitlik kontrolü
+                # O saatte müsait olan var mı kontrol et
+                available_at_time = [
+                    (slot, expert) for slot, expert in slots_with_experts
+                    if slot.hour == requested_time.hour
+                ]
+
+                if available_at_time:
+                    experts_available = [expert for _, expert in available_at_time]
+                    return json.dumps({
+                        "success": True,
+                        "available": True,
+                        "message": f"{requested_time.strftime('%d %B %Y %H:%M')} saatinde müsait uzmanlarımız var.",
+                        "available_slots": {requested_time.strftime('%H:%M'): experts_available}
+                    }, ensure_ascii=False)
+                else:
+                    return json.dumps({
+                        "success": True,
+                        "available": False,
+                        "message": f"{requested_time.strftime('%d %B %Y %H:%M')} saatinde maalesef müsait uzmanımız yok."
+                    }, ensure_ascii=False)
+
+        # Tüm gün için müsaitlik kontrolü (saat belirtilmemişse)
         slots_with_experts = appointment_repo.find_available_slots_for_day(
             service_type=service_type,
             day=requested_time.date(),
@@ -455,8 +493,8 @@ def cancel_appointment(
         logger.info(f"[cancel_appointment] phone={customer_phone}")
 
         from repository import CustomerRepository
-        customer_repo = CustomerRepository(None)
-        customer = customer_repo.get_by_phone_directus(customer_phone)
+        customer_repo = CustomerRepository()
+        customer = customer_repo.get_by_phone(customer_phone)
 
         if not customer:
             return json.dumps({
@@ -464,7 +502,7 @@ def cancel_appointment(
                 "error": "Müşteri bulunamadı."
             }, ensure_ascii=False)
 
-        appointments = customer_repo.get_appointments_directus(customer.id, limit=1)
+        appointments = customer_repo.get_appointments(customer.id, limit=1)
 
         if not appointments:
             return json.dumps({

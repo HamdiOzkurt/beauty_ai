@@ -325,16 +325,16 @@ class AppointmentRepository(BaseRepository):
             if appt.get('status', '').lower() in ['confirmed', 'pending']
         ]
 
-        # Get active experts
-        expert_params = {
-            "filter[_and][0][is_active][_eq]": True,
-            "filter[_and][1][tenant_id][_eq]": settings.TENANT_ID
-        }
-        if expert_name:
-            parts = expert_name.split(' ', 1)
-            expert_params["filter[_and][2][first_name][_icontains]"] = parts[0]
+        # Get active experts for this service
+        expert_repo = ExpertRepository()
+        experts = expert_repo.list_all(service_name=service_type)
 
-        experts_data = directus.get("voises_experts", expert_params)
+        # Filter by expert name if specified
+        if expert_name:
+            experts = [e for e in experts if expert_name.lower() in f"{e.first_name} {e.last_name}".lower()]
+
+        # Convert to dict format for compatibility
+        experts_data = [{"id": e.id, "first_name": e.first_name, "last_name": e.last_name} for e in experts]
 
         # Calculate available slots
         available_slots = []
