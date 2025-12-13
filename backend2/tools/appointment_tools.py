@@ -60,7 +60,7 @@ def parse_time_from_text(text: str) -> Optional[int]:
             elif 'öğleden sonra' in text_lower or 'ogleden sonra' in text_lower or 'akşam' in text_lower or 'aksam' in text_lower:
                 hour += 12
             # Hiçbir şey belirtilmemişse ve saat 8'den küçükse muhtemelen öğleden sonra
-            elif hour < 8:
+            elif hour < 12:
                 hour += 12
         return hour if 0 <= hour <= 23 else None
 
@@ -209,13 +209,13 @@ def check_availability(
                 "error": f"'{service_type}' adında bir hizmet bulunamadı."
             }, ensure_ascii=False)
 
-        duration = getattr(service, 'duration_minute', 60)
+        duration = getattr(service, 'duration_minute', 45)
         if isinstance(duration, str):
             try:
                 time_parts = duration.split(':')
                 duration = int(time_parts[0]) * 60 + int(time_parts[1])
             except:
-                duration = 60
+                duration = 45
 
         # Uzman kontrolü (Türkçe karakter desteği)
         normalized_expert_name = None

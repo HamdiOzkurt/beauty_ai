@@ -8,6 +8,10 @@ import json
 import uuid
 from typing import Dict, Optional
 from datetime import datetime
+import asyncio
+from queue import Queue
+import threading
+import sys
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
@@ -41,6 +45,25 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Explicitly set log level for Google Cloud Speech client and related handlers
+# This might be necessary if they use their own loggers that aren't caught by root.
+google_cloud_speech_logger = logging.getLogger('google.cloud.speech')
+google_cloud_speech_logger.setLevel(logging.DEBUG)
+for handler in google_cloud_speech_logger.handlers:
+    if handler.level > logging.DEBUG: # Only lower the level if it's higher than DEBUG
+        handler.setLevel(logging.DEBUG)
+
+# Ensure Uvicorn and other loggers also respect the DEBUG level
+# This is often necessary when uvicorn overrides default logging.
+# Iterate through all existing loggers and set their level.
+for log_name in logging.root.manager.loggerDict:
+    # Avoid re-configuring google.cloud.speech if already done
+    if not log_name.startswith('google.cloud.speech'):
+        current_logger = logging.getLogger(log_name)
+        if current_logger.level > getattr(logging, settings.LOG_LEVEL): # Only lower the level if it's higher
+            current_logger.setLevel(getattr(logging, settings.LOG_LEVEL))
+
 
 
 # ============================================================================
@@ -267,12 +290,12 @@ class TTSService:
             self.client = texttospeech.TextToSpeechClient()
             self.voice = texttospeech.VoiceSelectionParams(
                 language_code="tr-TR",
-                name="tr-TR-Wavenet-C",
+                name="tr-TR-Wavenet-D",
                 ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
             )
             self.audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
-                speaking_rate=0.9,
+                speaking_rate=1.1,
                 pitch=2.0,
                 effects_profile_id=["headphone-class-device"],
                 sample_rate_hertz=22050
@@ -346,304 +369,532 @@ def get_or_create_conversation(session_id: str) -> dict:
 
 
 # ============================================================================
+# WebSocket Helper Functions
+# ============================================================================
+
+async def process_audio_buffer(websocket: WebSocket, audio_buffer: bytes, session_id: str, conversation: dict):
+    """
+    Process accumulated audio buffer with Google Cloud STT + Agent.
+
+    Args:
+        websocket: WebSocket connection
+        audio_buffer: PCM audio data (Int16, 16kHz, mono)
+        session_id: Session ID
+        conversation: Conversation state
+    """
+    try:
+        t_start = time.time()
+
+        # STT: Convert audio to text
+        stt = get_stt_service()
+        if not stt:
+            logger.error("STT service is not available.")
+            await websocket.send_json({
+                "type": "error",
+                "content": "Ses tanıma hizmeti şu anda kullanılamıyor.",
+                "session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            return
+
+        logger.info(f"🎤 Processing audio buffer: {len(audio_buffer)} bytes")
+
+        # Google Cloud Streaming STT (best quality)
+        user_message, confidence = await run_streaming_stt(stt, audio_buffer)
+
+        if not user_message:
+            logger.warning("STT returned empty transcript")
+            await websocket.send_json({
+                "type": "error",
+                "content": "Ses anlaşılamadı, lütfen tekrar edin.",
+                "session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            return
+
+        # Send transcription to client
+        await websocket.send_json({
+            "type": "transcription",
+            "content": user_message,
+            "confidence": confidence,
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # Process with agent
+        await process_user_message(
+            websocket=websocket,
+            user_message=user_message,
+            session_id=session_id,
+            conversation=conversation
+        )
+
+        t_end = time.time()
+        logger.info(f"PERF: Total audio processing time: {t_end - t_start:.4f}s")
+
+    except Exception as e:
+        logger.error(f"Error processing audio buffer: {e}", exc_info=True)
+        await websocket.send_json({
+            "type": "error",
+            "content": "Ses işleme hatası oluştu.",
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+
+async def run_streaming_stt(stt: GoogleSTTService, audio_buffer: bytes) -> tuple:
+    """
+    Run Google Cloud Streaming STT on audio buffer.
+
+    Returns:
+        (transcript, confidence) tuple
+    """
+    try:
+        # Streaming config
+        chunk_size = int(16000 / 10)  # 100ms chunks
+
+        def audio_generator():
+            """Audio bytes'ı chunk'lara bölerek yield eder"""
+            for i in range(0, len(audio_buffer), chunk_size * 2):  # *2 çünkü 16-bit = 2 bytes
+                yield speech.StreamingRecognizeRequest(
+                    audio_content=audio_buffer[i:i + chunk_size * 2]
+                )
+
+        responses = stt.client.streaming_recognize(stt.streaming_config, audio_generator())
+
+        # En son final result'ı al
+        transcript = ""
+        confidence = 0.0
+
+        for response in responses:
+            if not response.results:
+                continue
+
+            result = response.results[0]
+            if not result.alternatives:
+                continue
+
+            if result.is_final:
+                transcript = result.alternatives[0].transcript
+                confidence = result.alternatives[0].confidence
+                logger.info(f"🎤 STT (final): {transcript} (confidence: {confidence:.2f})")
+
+        return transcript, confidence
+
+    except Exception as e:
+        logger.error(f"Streaming STT error: {e}", exc_info=True)
+        return "", 0.0
+
+
+async def process_user_message(websocket: WebSocket, user_message: str, session_id: str, conversation: dict):
+    """
+    Process user message with LangGraph agent and send response.
+
+    Args:
+        websocket: WebSocket connection
+        user_message: User's message text
+        session_id: Session ID
+        conversation: Conversation state
+    """
+    try:
+        # Add to history
+        conversation["history"].append({
+            "role": "user",
+            "content": user_message,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # History boyutu kontrolü
+        if len(conversation["history"]) > 50:
+            removed_count = len(conversation["history"]) - 30
+            conversation["history"] = conversation["history"][-30:]
+            logger.warning(f"🧹 History trimmed: removed {removed_count} old messages")
+
+        # Stream agent response
+        agent_response_text = ""
+        t_agent_start = time.time()
+
+        async for event in stream_agent(
+            user_message=user_message,
+            session_id=session_id,
+            collected_info=conversation["collected_info"],
+            context=conversation["context"],
+            history=conversation["history"]
+        ):
+            # Extract messages from event
+            if "agent" in event:
+                messages = event["agent"].get("messages", [])
+                if messages:
+                    last_msg = messages[-1]
+                    if hasattr(last_msg, "content") and last_msg.content:
+                        agent_response_text = last_msg.content
+
+            # Extract tool results
+            if "tools" in event:
+                messages = event["tools"].get("messages", [])
+                for msg in messages:
+                    if hasattr(msg, "content"):
+                        try:
+                            tool_result = json.loads(msg.content)
+                            if tool_result.get("success"):
+                                if "customer" in tool_result:
+                                    customer = tool_result["customer"]
+                                    conversation["context"]["customer_name"] = customer.get("name")
+                                    conversation["context"]["customer_phone"] = customer.get("phone")
+                                    conversation["collected_info"]["customer_phone"] = customer.get("phone")
+
+                                if "code" in tool_result:
+                                    conversation["collected_info"]["appointment_code"] = tool_result["code"]
+
+                                if "campaigns" in tool_result:
+                                    conversation["context"]["campaigns"] = tool_result["campaigns"]
+                        except:
+                            pass
+
+        t_agent_end = time.time()
+        logger.info(f"PERF: Agent processing: {t_agent_end - t_agent_start:.4f}s")
+
+        # Add to history
+        conversation["history"].append({
+            "role": "assistant",
+            "content": agent_response_text,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # Send text response
+        await websocket.send_json({
+            "type": "text",
+            "content": agent_response_text,
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # TTS: Convert text to audio
+        if agent_response_text:
+            tts = get_tts_service()
+            if tts:
+                audio_bytes = tts.text_to_speech(agent_response_text)
+                if audio_bytes:
+                    import base64
+                    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+                    await websocket.send_json({
+                        "type": "audio",
+                        "content": audio_base64,
+                        "session_id": session_id,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+
+        # Send stream end marker
+        await websocket.send_json({
+            "type": "stream_end",
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+    except Exception as e:
+        logger.error(f"Error processing user message: {e}", exc_info=True)
+        await websocket.send_json({
+            "type": "error",
+            "content": "Mesaj işleme hatası oluştu.",
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+
+# ============================================================================
 # WebSocket Endpoint
 # ============================================================================
 
 @app.websocket("/api/ws/v2/chat")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time conversation with the agent.
-
-    Message format (from client):
-    {
-        "type": "audio" | "text",
-        "session_id": "unique-session-id",
-        "data": base64_audio | text_message,
-        "sample_rate": 16000 (for audio)
-    }
-
-    Response format (to client):
-    {
-        "type": "text" | "audio" | "error",
-        "content": text_message | base64_audio,
-        "session_id": "session-id",
-        "timestamp": "2024-01-01T00:00:00"
-    }
+    WebSocket endpoint with Google Cloud Streaming STT + a robust,
+    utterance-based VAD (Voice Activity Detection) and processing logic.
     """
     await websocket.accept()
     session_id = str(uuid.uuid4())
-    logger.info(f"🔌 WebSocket connected: {session_id}")
+    logger.info(f"🔌 WebSocket connected (Utterance-based VAD): {session_id}")
 
-    try:
+    # --- State Management ---
+    conversation = get_or_create_conversation(session_id)
+    stt = get_stt_service()
+    if not stt:
+        logger.error("STT service not available")
+        await websocket.close(code=1011, reason="STT service unavailable")
+        return
+
+    # Queues for thread-safe communication
+    audio_queue = Queue()
+    callback_queue = asyncio.Queue()
+
+    # Core state variables
+    processing_lock = False
+    stt_started = False
+    stt_thread = None
+    
+    # Utterance-specific state
+    # This ID acts as a generation counter to prevent race conditions.
+    utterance_id = 0
+    last_interim_time = None
+    accumulated_interim = ""
+    speech_active = False
+
+    # --- STT Configuration ---
+    streaming_config = speech.StreamingRecognitionConfig(
+        config=speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000,
+            language_code="tr-TR",
+            model="latest_long",
+            use_enhanced=True, # Enabled for better accuracy as per user's earlier comment
+            enable_automatic_punctuation=True,
+            speech_contexts=[speech.SpeechContext(
+                phrases=[
+                    "randevu", "randevu almak", "cilt bakımı", "saç kesimi",
+                    "pedikür", "manikür", "yarın", "bugün", "saat", "uzman"
+                ],
+                boost=15.0
+            )]
+        ),
+        interim_results=True,
+        single_utterance=False
+    )
+
+    # --- Helper Functions (defined within endpoint scope) ---
+
+    def audio_generator():
+        """Yields audio chunks from the queue. Stops on `None`."""
         while True:
-            # Receive message (can be binary or JSON)
-            message = await websocket.receive()
+            chunk = audio_queue.get()
+            if chunk is None:
+                break
+            yield speech.StreamingRecognizeRequest(audio_content=chunk)
 
-            # Check if it's binary (audio) or text (JSON)
-            if "bytes" in message:
-                # ⏱️ Start timing
-                import time
-                t_start = time.time()
+    def process_stt_responses_sync():
+        """
+        Runs in a thread. Manages STT stream lifecycle using `utterance_id`
+        to discard stale responses from previous streams.
+        """
+        nonlocal utterance_id, accumulated_interim, last_interim_time, speech_active
 
-                # Binary audio data
-                audio_bytes = message["bytes"]
-                t_audio_received = time.time()
-                logger.info(f"PERF: Audio received at {t_audio_received:.4f}s")
-                logger.info(f"📨 Received binary audio: {len(audio_bytes)} bytes")
-
-                # Get conversation state
-                conversation = get_or_create_conversation(session_id)
-
-                # STT: Convert audio to text
-                t_stt_start = time.time()
-                logger.info(f"PERF: STT started at {t_stt_start:.4f}s")
-                stt = get_stt_service()
-                if not stt:
-                    logger.error("STT service is not available.")
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": "Ses tanıma hizmeti şu anda kullanılamıyor.",
-                        "session_id": session_id,
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    continue
-
-                # Streaming STT kullan (daha iyi Türkçe tanıma)
-                # WebM ise batch, PCM ise streaming
-                is_webm = audio_bytes[:4] == b'\x1a\x45\xdf\xa3'
-
-                if is_webm:
-                    # WebM için batch mode (streaming desteklemiyor)
-                    user_message, confidence = stt.transcribe_audio_bytes(audio_bytes)
-                    logger.info(f"🎤 WebM format detected, using batch STT")
-                else:
-                    # PCM için streaming mode (daha iyi tanıma!)
-                    logger.info(f"🎤 PCM format detected, using streaming STT")
-                    
-                    DEADLINE_SECONDS = 1.0
-                    final_transcript = ""
-                    confidence = 0.0
-
-                    try:
-                        # Audio'yu chunk'lara böl (streaming için)
-                        chunk_size = int(16000 / 10)  # 100ms chunks
-
-                        def audio_generator():
-                            """Audio bytes'ı chunk'lara bölerek yield eder"""
-                            for i in range(0, len(audio_bytes), chunk_size * 2):  # *2 çünkü 16-bit = 2 bytes
-                                yield speech.StreamingRecognizeRequest(
-                                    audio_content=audio_bytes[i:i + chunk_size * 2]
-                                )
-                        
-                        responses = stt.client.streaming_recognize(stt.streaming_config, audio_generator(), timeout=DEADLINE_SECONDS * 2)
-                        
-                        for response in responses:
-                            if not response.results:
-                                continue
-
-                            result = response.results[0]
-                            if not result.alternatives:
-                                continue
-
-                            transcript = result.alternatives[0].transcript
-
-                            if result.is_final:
-                                final_transcript = transcript
-                                confidence = result.alternatives[0].confidence
-                                logger.info(f"🎤 STT (final): {final_transcript} (confidence: {confidence:.2f})")
-                            else:
-                                logger.info(f"🎤 STT (interim): {transcript}")
-                        
-                        user_message = final_transcript
-
-                    except DeadlineExceeded:
-                        logger.warning(f"Sessizlik nedeniyle konuşma sonlandırıldı. Son anlaşılan: {final_transcript}")
-                        user_message = final_transcript
-                    except Exception as e:
-                        logger.error(f"Streaming STT error: {e}", exc_info=True)
-                        user_message = ""
-                        confidence = 0.0
-
-                t_stt_end = time.time()
-                logger.info(f"PERF: STT finished at {t_stt_end:.4f}s (duration: {t_stt_end - t_stt_start:.4f}s)")
-
-                if not user_message:
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": "Ses anlaşılamadı, lütfen tekrar edin.",
-                        "session_id": session_id,
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    continue
-
-                # Send transcription back to client
-                await websocket.send_json({
-                    "type": "transcription",
-                    "content": user_message,
-                    "confidence": confidence,
-                    "session_id": session_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-
-            elif "text" in message:
-                # JSON text message
-                import json
-                data = json.loads(message["text"])
-                message_type = data.get("type")
-                session_id = data.get("session_id", session_id)
-
-                logger.info(f"📨 Received {message_type} message")
-
-                # Get conversation state
-                conversation = get_or_create_conversation(session_id)
-
-                if message_type == "text":
-                    user_message = data.get("data", "")
-                else:
-                    logger.warning(f"Unknown message type: {message_type}")
-                    continue
-            else:
-                logger.warning("Unknown message format")
-                continue
-
-            # Add to history
-            conversation["history"].append({
-                "role": "user",
-                "content": user_message,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-
-            # History boyutu kontrolü - Çok büyürse eski mesajları sil
-            if len(conversation["history"]) > 50:
-                # Son 30 mesajı tut, eski 20'yi sil
-                removed_count = len(conversation["history"]) - 30
-                conversation["history"] = conversation["history"][-30:]
-                logger.warning(f"🧹 History too large! Removed {removed_count} old messages. Current size: {len(conversation['history'])}")
-
-            # Stream agent response
-            agent_response_text = ""
-            t_agent_start = time.time()
-            logger.info(f"PERF: Agent started at {t_agent_start:.4f}s")
+        # This outer loop handles stream restarts.
+        while True:
+            # Create a local copy of the utterance ID for this stream instance.
+            local_utterance_id = utterance_id
 
             try:
-                async for event in stream_agent(
-                    user_message=user_message,
-                    session_id=session_id,
-                    collected_info=conversation["collected_info"],
-                    context=conversation["context"],
-                    history=conversation["history"]
-                ):
-                    # Extract messages from event
-                    if "agent" in event:
-                        messages = event["agent"].get("messages", [])
-                        if messages:
-                            last_msg = messages[-1]
-                            if hasattr(last_msg, "content") and last_msg.content:
-                                agent_response_text = last_msg.content
+                stream_gen = audio_generator()
+                responses = stt.client.streaming_recognize(streaming_config, stream_gen)
+                logger.info(f"🎙️ New STT stream started for utterance #{local_utterance_id}")
 
-                    # Extract tool results
-                    if "tools" in event:
-                        messages = event["tools"].get("messages", [])
-                        for msg in messages:
-                            if hasattr(msg, "content"):
-                                # Parse tool result and update collected_info
-                                try:
-                                    tool_result = json.loads(msg.content)
-                                    if tool_result.get("success"):
-                                        # Update collected info based on tool result
-                                        if "customer" in tool_result:
-                                            customer = tool_result["customer"]
-                                            conversation["context"]["customer_name"] = customer.get("name")
-                                            conversation["context"]["customer_phone"] = customer.get("phone")
-                                            conversation["collected_info"]["customer_phone"] = customer.get("phone")
+                for response in responses:
+                    # **CRITICAL:** If the global utterance_id has changed, it means
+                    # this stream is stale and must be terminated to prevent ghost triggers.
+                    if local_utterance_id != utterance_id:
+                        logger.warning(f"🛑 Stale stream #{local_utterance_id} detected. Terminating.")
+                        break
 
-                                        if "code" in tool_result:
-                                            conversation["collected_info"]["appointment_code"] = tool_result["code"]
+                    if not response.results:
+                        continue
+                    
+                    full_transcript_from_response = ""
+                    is_final = False
+                    
+                    # Iterate through all result segments within the single response object
+                    for result_segment in response.results:
+                        if result_segment.alternatives and result_segment.alternatives[0].transcript:
+                            # Concatenate the best alternative (first one) from each segment
+                            full_transcript_from_response += result_segment.alternatives[0].transcript
+                        
+                        # Capture is_final flag
+                        if result_segment.is_final:
+                            is_final = True
+                    
+                    # Boş final response geliş olmak - son interim'i koru!
+                    if is_final and not full_transcript_from_response.strip():
+                        logger.debug(f"⏭️ Empty final response for utterance #{local_utterance_id}. Keeping accumulated_interim: '{accumulated_interim}'")
+                        continue
+                    
+                    # Add detailed logging here
+                    logger.info(f"DEBUG_STT_RAW: Utterance #{local_utterance_id}, IsFinal: {is_final}, FullTranscript: '{full_transcript_from_response}'")
+                    print(f"DEBUG_STT_RAW: Utterance #{local_utterance_id}, Combined Transcript: '{full_transcript_from_response}', IsFinal: {is_final}, FullResponse: {response}", file=sys.stderr)
 
-                                        if "campaigns" in tool_result:
-                                            conversation["context"]["campaigns"] = tool_result["campaigns"]
-                                except:
-                                    pass
+                    # Update buffer: APPEND for interim, REPLACE for final
+                    # Bu sayede Google STT'nin kırıntı responses'ından para yapabiliriz
+                    if full_transcript_from_response.strip():  # Sadece non-empty transcript'ler
+                        if is_final:
+                            # Final response: kesin söylenmiş, accumulated'ı güncelle
+                            accumulated_interim = full_transcript_from_response
+                        else:
+                            # Interim: eğer daha önce hiç almadıysak başlat, yoksa append et
+                            if not accumulated_interim:
+                                accumulated_interim = full_transcript_from_response
+                            # Interim'leri append etme, sadece replace et (Google STT full hypothesis döner)
+                            else:
+                                accumulated_interim = full_transcript_from_response
+                        
+                        last_interim_time = time.time()
 
-                    # Mesajdan hizmet/tarih bilgisi çıkar (basit keyword matching)
-                    # Bu bilgileri collected_info'ya ekle ki AI sonraki adımlarda kullansın
-                    user_msg_lower = user_message.lower()
-                    services_keywords = ["cilt bakımı", "saç kesimi", "pedikür", "manikür"]
-                    for service in services_keywords:
-                        if service in user_msg_lower:
-                            conversation["collected_info"]["service"] = service
-                            logger.info(f"📝 Service detected and saved: {service}")
-                            break
-
-            except Exception as e:
-                logger.error(f"Agent stream error: {e}", exc_info=True)
-                agent_response_text = "Üzgünüm, bir hata oluştu. Lütfen tekrar dener misiniz?"
-            
-            t_agent_end = time.time()
-            logger.info(f"PERF: Agent finished at {t_agent_end:.4f}s (duration: {t_agent_end - t_agent_start:.4f}s)")
-
-            # Add to history
-            conversation["history"].append({
-                "role": "assistant",
-                "content": agent_response_text,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-
-            # Send text response
-            await websocket.send_json({
-                "type": "text",
-                "content": agent_response_text,
-                "session_id": session_id,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-
-            # TTS: Convert text to audio
-            if agent_response_text:
-                t_tts_start = time.time()
-                logger.info(f"PERF: TTS started at {t_tts_start:.4f}s")
-                tts = get_tts_service()
-                if tts:
-                    audio_bytes = tts.text_to_speech(agent_response_text)
-                    t_tts_end = time.time()
-                    logger.info(f"PERF: TTS finished at {t_tts_end:.4f}s (duration: {t_tts_end - t_tts_start:.4f}s)")
-                    if audio_bytes:
-                        import base64
-                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-
-                        await websocket.send_json({
-                            "type": "audio",
-                            "content": audio_base64,
+                    if not speech_active and full_transcript_from_response.strip():
+                        speech_active = True
+                        logger.info(f"🎤 Speech started in utterance #{local_utterance_id}: {full_transcript_from_response[:30]}...")
+                        callback_queue.put_nowait({
+                            "type": "vad_speech_start",
                             "session_id": session_id,
                             "timestamp": datetime.utcnow().isoformat()
                         })
-                        t_audio_sent = time.time()
-                        logger.info(f"PERF: Audio sent at {t_audio_sent:.4f}s")
 
+            except Exception as e:
+                # Handle expected stream timeouts and errors gracefully.
+                logger.warning(f"⚠️ STT stream for utterance #{local_utterance_id} ended: {e}")
+                # The loop will naturally restart, but we check the utterance_id
+                # to see if we should continue.
+                if local_utterance_id != utterance_id:
+                    logger.info(f"Utterance #{local_utterance_id} already processed. Thread is catching up.")
+                continue # Always attempt to restart the stream.
+
+    async def process_callbacks():
+        """Processes events from the STT thread and timeout monitor."""
+        nonlocal processing_lock
+        while True:
+            try:
+                callback = await callback_queue.get()
+                callback_type = callback.get("type")
+
+                if callback_type == "process_message":
+                    await process_user_message(
+                        websocket=websocket,
+                        user_message=callback["content"],
+                        session_id=session_id,
+                        conversation=conversation
+                    )
+                    processing_lock = False # Release lock after processing.
                 else:
-                    logger.warning("TTS service is not available, skipping audio generation.")
+                    await websocket.send_json(callback)
+            except Exception as e:
+                logger.error(f"Callback processing error: {e}", exc_info=True)
 
-            # Send stream end marker
-            await websocket.send_json({
-                "type": "stream_end",
-                "session_id": session_id,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            t_end = time.time()
-            logger.info(f"PERF: Total request time: {t_end - t_start:.4f}s")
+    async def monitor_interim_timeout():
+        """
+        The single authority for deciding when an utterance has ended.
+        Triggers LLM processing and manages the utterance lifecycle.
+        """
+        nonlocal utterance_id, last_interim_time, accumulated_interim, speech_active, processing_lock
+
+        TIMEOUT_SECONDS = 1.2 
+        GREETINGS = ["alo", "merhaba"]  # Sadece pure greetings
+
+        while True:
+            await asyncio.sleep(0.2)  # Daha sık kontrol (0.2s)
+
+            if last_interim_time and not processing_lock and (time.time() - last_interim_time) >= TIMEOUT_SECONDS:
+                # 1. Acquire lock.
+                processing_lock = True
+                
+                # 2. Get final text.
+                final_text = accumulated_interim.strip()
+
+                # 3. **CRITICAL:** Increment utterance_id immediately.
+                # This invalidates the current STT stream and prevents ghost responses.
+                utterance_id += 1
+                logger.info(f"⏱️ Silence detected. Ending utterance #{utterance_id - 1}. New utterance is #{utterance_id}.")
+
+                # 4. Save final text BEFORE reset (Google STT boş final response yapabilir!)
+                final_text_backup = final_text
+                
+                # 5. Reset state for the new utterance.
+                last_interim_time = None
+                accumulated_interim = ""
+                speech_active = False
+
+                # 6. Restart the STT stream by killing the old generator.
+                audio_queue.put(None)
+
+                # 7. REMOVED: Greeting-only filter - Tüm mesajları LLM'e gönder!
+                # Alo, merhaba gibi basit greetings bile LLM'in cevapvermesine izin ver
+                
+                # 8. Short utterance guard.
+                if len(final_text.strip()) < 2: # Çok kısa (1-2 karakter) mesajları ignore et
+                    logger.info(f"⚠️ Ignoring very short utterance: '{final_text}'")
+                    processing_lock = False
+                    continue
+
+                # 9. Google STT'nin boş final response problemi için
+                logger.info(f"📝 Final text for LLM: '{final_text}' (from interim buffer)")
+
+                # 10. Send final events to client and queue LLM task.
+                await websocket.send_json({
+                    "type": "vad_speech_end",
+                    "session_id": session_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                await websocket.send_json({
+                    "type": "transcription",
+                    "content": final_text,
+                    "confidence": 0.95,
+                    "session_id": session_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                logger.info(f"📤 Final transcription sent: '{final_text}'")
+
+                callback_queue.put_nowait({
+                    "type": "process_message",
+                    "content": final_text
+                })
+
+    # --- Main Execution Logic ---
+    callback_task = asyncio.create_task(process_callbacks())
+    timeout_task = asyncio.create_task(monitor_interim_timeout())
+
+    try:
+        while True:
+            message = await websocket.receive()
+            message_type = message.get("type")
+
+            if message_type == "websocket.disconnect":
+                logger.info(f"🔌 Client disconnected gracefully")
+                break
+
+            if "bytes" in message:
+                if not stt_started:
+                    stt_started = True
+                    stt_thread = threading.Thread(target=process_stt_responses_sync, daemon=True)
+                    stt_thread.start()
+                    logger.info("🚀 Google Cloud STT thread started.")
+                
+                audio_queue.put(message["bytes"])
+
+            elif "text" in message:
+                data = json.loads(message["text"])
+                if data.get("type") == "text":
+                    # Manually trigger processing for text messages.
+                    processing_lock = True
+                    utterance_id += 1 # Invalidate any ongoing speech
+                    audio_queue.put(None) # Reset STT stream
+                    last_interim_time, accumulated_interim, speech_active = None, "", False
+                    
+                    logger.info(f"📨 Text message received. Processing: '{data.get('data', '')}'")
+                    callback_queue.put_nowait({
+                        "type": "process_message",
+                        "content": data.get("data", "")
+                    })
+                else:
+                    logger.warning(f"Unknown JSON message type: {data.get('type')}")
 
     except WebSocketDisconnect:
         logger.info(f"🔌 WebSocket disconnected: {session_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "content": "Bağlantı hatası oluştu.",
-                "session_id": session_id,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        except:
-            pass
+    finally:
+        # Cleanup
+        logger.info(f"🧹 Cleaning up session: {session_id}")
+        audio_queue.put(None)
+        callback_task.cancel()
+        timeout_task.cancel()
+        if stt_thread and stt_thread.is_alive():
+            stt_thread.join(timeout=1.0)
+        logger.info(f"✅ Cleanup complete for session: {session_id}")
 
 
 # ============================================================================
@@ -720,10 +971,10 @@ async def chat_endpoint(request: dict):
 # Static Files & Frontend
 # ============================================================================
 
-# Mount static files from parent backend directory
+# Mount static files from current backend2 directory
 import os
-STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend", "static")
-INDEX_HTML_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend", "templates", "index.html")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+INDEX_HTML_PATH = os.path.join(os.path.dirname(__file__), "templates", "index.html")
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

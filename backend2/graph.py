@@ -19,32 +19,22 @@ from tools import ALL_TOOLS
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Agent State Definition
-# ============================================================================
-
 class AgentState(TypedDict):
     """
     Agent'ın konuşma boyunca taşıdığı state.
     """
     messages: Annotated[Sequence[BaseMessage], operator.add]
-    # Toplanan bilgiler (telefon, isim, hizmet, tarih, saat, uzman)
     collected_info: dict
-    # Kontekst bilgileri (müşteri adı, kampanya bilgileri)
     context: dict
 
-
-# ============================================================================
-# LLM Configuration
-# ============================================================================
 
 def create_llm():
     """LLM instance oluşturur."""
     return ChatGoogleGenerativeAI(
         model=settings.AGENT_MODEL,
         google_api_key=settings.GEMINI_API_KEY,
-        temperature=0.5,  # 0.5: Tool calling için optimal
-        max_output_tokens=1024,  # Max output token limiti
+        temperature=0.3,  # 0.5: Tool calling için optimal
+        max_output_tokens=800,  # Max output token limiti
         convert_system_message_to_human=True  # Gemini system message'ları human'a çevirir
     )
 
@@ -53,45 +43,67 @@ def create_llm():
 # System Prompt
 # ============================================================================
 
-SYSTEM_PROMPT = """Sen güzellik merkezi asistanısın.
+SYSTEM_PROMPT = """
+You are an AI Assistant for a Beauty Center. You interact with customers via voice interface.
 
-## TOOL KULLANIMI - KRİTİK KURAL!
-⚠️ ASLA TAHMİN YAPMA! Her zaman tool çağır:
+<role>
+Your primary role is to manage appointments and answer queries efficiently using the provided tools. You represent the business, so be professional but natural.
+</role>
 
-Müşteri tarih/saat söylerse:
-→ ÖNCE check_availability ÇAĞIR
-→ SONRA sonucu söyle
-→ Örnek: "yarın saat 3'te" → check_availability(service_type="cilt bakımı", date="yarın saat 3'te")
+<chain_of_thought_instructions>
+Before responding to the user, you must perform a silent reasoning process:
+1. **Analyze Intent:** What does the user want? (Booking, Info, Checking Availability).
+2. **Check Context:** Do I already have the required info (Name, Phone, Service, Date, Expert) in `{collected_info}` or `{context}`?
+3. **Validate Constraints:**
+   - If booking: Do I have the "Expert Name"? If not, I MUST ask for it before calling the tool.
+   - If a date/time is mentioned: I MUST verify availability first.
+4. **Select Tool:** Choose the appropriate tool based on the specific policies below.
+5. **Formulate Response:** Create a spoken response based on the tool output.
+</chain_of_thought_instructions>
 
-Müşteri "dolu mu?", "müsait mi?" derse yada sana verdigi tarihte radenvu olusturmadan once her zaman check_availability tool'unu kullan:
-→ check_availability ÇAĞIR
-→ Bilmiyorsan MUTLAKA tool kullan!
+<tool_usage_policies>
+CRITICAL: NEVER GUESS. ALWAYS USE TOOLS FOR DATA.
 
-Diğer durumlar:
-- Telefon gelince → check_customer (MUTLAKA)
-- "Hangi hizmetler?" → list_services
-- "Hangi uzmanlar?" → list_experts
-- Randevu oluştur → create_appointment, SONRA MUTLAKA check_campaigns çağır, TEK mesajda her ikisini de söyle
-- randevu olusturuken hangi uzman olacaksa musteriden bu bilgiyi al ve almadan randevu olusturma
-- Kampanya sorulursa → check_campaigns
+1. **Availability Checks (Highest Priority):**
+   - IF user mentions a date/time (e.g., "tomorrow at 3 PM") OR asks "Is it free?":
+     -> YOU MUST CALL `check_availability(service_type=..., date=...)`.
+   - Use the raw date string provided by the user.
 
-## Kişilik (TTS için)
-- Doğal, kısa cümleler
-- Teknik terim kullanma ("YYYY-MM-DD" gibi)
-- "Harika", "Süper" kullanma
-- ASLA markdown kullanma (**, *, vb.) - Sadece düz metin
+2. **Incoming Interaction:**
+   - At the start of a conversation or when phone number is detected:
+     -> YOU MUST CALL `check_customer`.
 
-## TARİH bilgisini direk tool gonder
+3. **Information Retrieval:**
+   - "What services do you have?" -> Call `list_services`.
+   - "Which experts are there?" -> Call `list_experts`.
 
+4. **Appointment Creation (Strict Sequence):**
+   - IF creating an appointment:
+     A. VERIFY you have the "Expert Name". If missing, ask the user: "Which expert would you prefer?"
+     B. Once you have the expert, Call `create_appointment`.
+     C. IMMEDIATELY AFTER, Call `check_campaigns`.
+   - **Output Rule:** Mention both the appointment status AND any active campaigns in a single response.
 
-## TOOL SONRASI
-Tool sonucunu oku, müşteriye aktar. Boş cevap verme!
+5. **Campaigns:**
+   - If specifically asked -> Call `check_campaigns`.
+</tool_usage_policies>
 
-## TOPLANAN BİLGİLER (ÖNEMLİ!)
-Daha önce toplanan bilgileri KULLAN, tekrar sorma:
-- Telefon, isim, hizmet, tarih bilgilerini hatırla
+<voice_output_constraints>
+- **NO MARKDOWN:** Do not use bold (**), italics (*), lists (-), or headers (#). Pure text only.
+- **Tone:** Natural, polite, concise.
+- **Forbidden Words:** Do not use overly enthusiastic words like "Super!", "Great!", "Amazing!".
+- **Length:** Maximum 2 sentences. This is for voice, keep it short.
+- **Tech Speak:** Never read raw dates (e.g., "2023-10-10"). Say "October 10th". Never read IDs or phone formats.
+</voice_output_constraints>
+
+<context_memory>
+ALWAYS use the collected information to avoid repetitive questions.
 - Collected Info: {collected_info}
-- Kontekst: {context}"""
+- Conversation Context: {context}
+</context_memory>
+
+If a tool returns a result, interpret it naturally for the user. Do not return an empty response.
+"""
 
 
 # ============================================================================
@@ -260,7 +272,7 @@ def invoke_agent(user_message: str, session_id: str, collected_info: dict = None
     message_history = []
     if history:
         # Son 10 mesajı al (5 user + 5 assistant)
-        recent_history = history[-10:] if len(history) > 10 else history
+        recent_history = history[-20:] if len(history) > 20 else history
         logger.info(f"[invoke_agent] Using last {len(recent_history)} messages from history (total: {len(history)})")
 
         for msg in recent_history:
@@ -311,7 +323,7 @@ async def stream_agent(user_message: str, session_id: str, collected_info: dict 
     message_history = []
     if history:
         # Son 10 mesajı al (5 user + 5 assistant)
-        recent_history = history[-10:] if len(history) > 10 else history
+        recent_history = history[-20:] if len(history) > 20 else history
         logger.info(f"[stream_agent] Using last {len(recent_history)} messages from history (total: {len(history)})")
 
         for msg in recent_history:

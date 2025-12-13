@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: list[str] = ["*"]
 
     # Logging
-    LOG_LEVEL: str = "INFO"
+    LOG_LEVEL: str = "DEBUG"
 
     # Optional: Google Cloud Credentials path
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
