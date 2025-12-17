@@ -74,7 +74,7 @@ CRITICAL: NEVER GUESS. ALWAYS USE TOOLS FOR DATA.
      -> YOU MUST CALL `check_customer`.
 
 3. **Information Retrieval:**
-   - "What services do you have?" -> Call `list_services`.
+   - "What services do you have? and For service pricing information" -> Call `list_services`.
    - "Which experts are there?" -> Call `list_experts`.
 
 4. **Appointment Creation (Strict Sequence):**
