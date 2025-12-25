@@ -101,13 +101,16 @@ class GoogleSTTService:
             # Bu kelimeler daha iyi tanınacak
             speech_contexts = speech.SpeechContext(
                 phrases=[
+                    # Onay kelimeleri (ÖNEMLI: İlk sırada)
+                    "evet", "hayır", "olur", "tamam", "peki", "yok", "var",
+                    # Randevu kelimeleri
                     "randevu", "randevu almak", "randevu oluştur",
                     "cilt bakımı", "saç kesimi", "pedikür", "manikür",
                     "yarın", "bugün", "pazartesi", "salı", "çarşamba", "perşembe", "cuma", "cumartesi", "pazar",
                     "saat", "müsait", "dolu", "uygun", "uzman", "kampanya",
                     "telefon numarası", "isim", "soyisim"
                 ],
-                boost=15.0  # Bu kelimeleri daha çok önceliklendir
+                boost=12.0  # 15'ten düşürüldü
             )
 
             # EN İYİ Config - Enhanced model kullan
@@ -290,17 +293,15 @@ class TTSService:
             self.client = texttospeech.TextToSpeechClient()
             self.voice = texttospeech.VoiceSelectionParams(
                 language_code="tr-TR",
-                name="tr-TR-Wavenet-D",
+                name="tr-TR-Chirp3-HD-Leda",
                 ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
             )
             self.audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
-                speaking_rate=1.1,
-                pitch=2.0,
-                effects_profile_id=["headphone-class-device"],
-                sample_rate_hertz=22050
+                speaking_rate=1.0,  # Chirp3 için ideal hız
+                sample_rate_hertz=24000  # HD model için 24kHz
             )
-            logger.info("✅ Google TTS initialized")
+            logger.info("✅ Google TTS initialized (Chirp3-HD-Leda)")
         except Exception as e:
             logger.error(f"❌ TTS initialization failed: {e}")
             raise
@@ -651,10 +652,13 @@ async def websocket_endpoint(websocket: WebSocket):
             enable_automatic_punctuation=True,
             speech_contexts=[speech.SpeechContext(
                 phrases=[
+                    # Onay kelimeleri (ÖNEMLI: İlk sırada)
+                    "evet", "hayır", "olur", "tamam", "peki", "yok", "var",
+                    # Randevu kelimeleri
                     "randevu", "randevu almak", "cilt bakımı", "saç kesimi",
                     "pedikür", "manikür", "yarın", "bugün", "saat", "uzman"
                 ],
-                boost=15.0
+                boost=12.0  # 15'ten düşürüldü, çok yüksek boost diğer kelimeleri bastırıyor
             )]
         ),
         interim_results=True,
@@ -782,11 +786,11 @@ async def websocket_endpoint(websocket: WebSocket):
         """
         nonlocal utterance_id, last_interim_time, accumulated_interim, speech_active, processing_lock
 
-        TIMEOUT_SECONDS = 1.2 
+        TIMEOUT_SECONDS = 1.2  # İlk kelimenin kaçmaması için artırıldı
         GREETINGS = ["alo", "merhaba"]  # Sadece pure greetings
 
         while True:
-            await asyncio.sleep(0.2)  # Daha sık kontrol (0.2s)
+            await asyncio.sleep(0.15)  # Daha hassas kontrol (0.15s)
 
             if last_interim_time and not processing_lock and (time.time() - last_interim_time) >= TIMEOUT_SECONDS:
                 # 1. Acquire lock.
@@ -847,6 +851,12 @@ async def websocket_endpoint(websocket: WebSocket):
     callback_task = asyncio.create_task(process_callbacks())
     timeout_task = asyncio.create_task(monitor_interim_timeout())
 
+    # STT thread'i hemen başlat (ilk audio gelmeden önce hazır olsun)
+    stt_thread = threading.Thread(target=process_stt_responses_sync, daemon=True)
+    stt_thread.start()
+    stt_started = True
+    logger.info("🚀 Google Cloud STT thread started at connection start")
+
     try:
         while True:
             message = await websocket.receive()
@@ -857,12 +867,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
 
             if "bytes" in message:
-                if not stt_started:
-                    stt_started = True
-                    stt_thread = threading.Thread(target=process_stt_responses_sync, daemon=True)
-                    stt_thread.start()
-                    logger.info("🚀 Google Cloud STT thread started.")
-                
+                # STT thread zaten çalışıyor, sadece audio'yu queue'ya at
                 audio_queue.put(message["bytes"])
 
             elif "text" in message:
