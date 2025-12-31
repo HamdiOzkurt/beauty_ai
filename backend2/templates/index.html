@@ -7,12 +7,27 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>💆‍♀️ Güzellik Merkezi - Sesli Asistan</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=20251116210">
+    <link rel="stylesheet" href="/static/css/style.css?v=20251230">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
+    <!-- Background Ambient Music -->
+    <audio id="bgMusic" loop preload="auto">
+        <source src="/static/ambient/background.mp3" type="audio/mpeg">
+    </audio>
+
+    <!-- Background Music Control -->
+    <div class="bg-music-control" id="bgMusicControl">
+        <button class="bg-music-btn" id="bgMusicBtn" onclick="toggleBgMusic()">
+            <svg id="musicIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+            </svg>
+        </button>
+        <input type="range" class="volume-slider" id="bgVolume" min="0" max="100" value="4" onchange="setBgVolume(this.value)">
+    </div>
+
     <!-- Background -->
     <div class="background">
         <div class="bg-gradient"></div>
@@ -111,6 +126,6 @@
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20251116210"></script>
+    <script src="/static/js/main.js?v=20251230"></script>
 </body>
 </html>

@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Test - ElevenLabs</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            color: #fff;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #888;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            color: #ccc;
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            color: #fff;
+            font-size: 16px;
+            resize: vertical;
+            min-height: 120px;
+            transition: border-color 0.3s;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #6c5ce7;
+        }
+
+        textarea::placeholder {
+            color: #666;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(108, 92, 231, 0.3);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .audio-container {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            display: none;
+        }
+
+        .audio-container.show {
+            display: block;
+        }
+
+        .audio-label {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        audio {
+            width: 100%;
+            border-radius: 8px;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 14px;
+            display: none;
+        }
+
+        .status.show {
+            display: block;
+        }
+
+        .status.loading {
+            background: rgba(108, 92, 231, 0.2);
+            color: #a29bfe;
+        }
+
+        .status.success {
+            background: rgba(0, 184, 148, 0.2);
+            color: #00b894;
+        }
+
+        .status.error {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+        }
+
+        .info {
+            margin-top: 15px;
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .examples {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .example-btn {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            color: #ccc;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .example-btn:hover {
+            background: rgba(108, 92, 231, 0.3);
+            border-color: #6c5ce7;
+        }
+
+        /* Background Music Controls */
+        .bg-music-control {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .bg-music-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #e84393 0%, #fd79a8 100%);
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .bg-music-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .bg-music-btn.muted {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .volume-slider {
+            width: 80px;
+            height: 4px;
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        .volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            background: #fd79a8;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .bg-label {
+            color: #888;
+            font-size: 11px;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Background Ambient Music -->
+    <audio id="bgMusic" loop preload="auto">
+        <source src="/static/ambient/background.mp3" type="audio/mpeg">
+    </audio>
+
+    <!-- Background Music Control -->
+    <div class="bg-music-control">
+        <button class="bg-music-btn" id="bgMusicBtn" onclick="toggleBgMusic()">
+            <svg id="musicIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+            </svg>
+        </button>
+        <input type="range" class="volume-slider" id="bgVolume" min="0" max="100" value="4"
+            onchange="setBgVolume(this.value)">
+        <span class="bg-label">Ambient</span>
+    </div>
+
+    <div class="container">
+        <h1>TTS Test</h1>
+        <p class="subtitle">ElevenLabs Text-to-Speech (eleven_multilingual_v2)</p>
+
+        <div class="input-group">
+            <label for="text">Metni girin:</label>
+            <textarea id="text"
+                placeholder="Seslendirilecek metni buraya yazın...">Merhaba, ben yapay zeka asistanınızım. Size nasıl yardımcı olabilirim?</textarea>
+        </div>
+
+        <div class="examples">
+            <button class="example-btn"
+                onclick="setExample('Merhaba, randevunuz onaylandı. Yarın saat 14:00 bekliyoruz.')">Randevu</button>
+            <button class="example-btn"
+                onclick="setExample('Günaydın! Bugün için cilt bakımı randevunuz var.')">Sabah</button>
+            <button class="example-btn" onclick="setExample('Teşekkür ederiz, iyi günler dileriz.')">Veda</button>
+        </div>
+
+        <button class="btn btn-primary" id="generateBtn" onclick="generateSpeech()">
+            <span id="btnText">Seslendır</span>
+            <div class="spinner" id="spinner" style="display: none;"></div>
+        </button>
+
+        <div class="status" id="status"></div>
+
+        <div class="audio-container" id="audioContainer">
+            <span class="audio-label">Oluşturulan ses:</span>
+            <audio id="audioPlayer" controls></audio>
+        </div>
+
+        <p class="info">Model: eleven_multilingual_v2 | Voice: Rachel</p>
+    </div>
+
+    <script>
+        function setExample(text) {
+            document.getElementById('text').value = text;
+        }
+
+        async function generateSpeech() {
+            const text = document.getElementById('text').value.trim();
+            const btn = document.getElementById('generateBtn');
+            const btnText = document.getElementById('btnText');
+            const spinner = document.getElementById('spinner');
+            const status = document.getElementById('status');
+            const audioContainer = document.getElementById('audioContainer');
+            const audioPlayer = document.getElementById('audioPlayer');
+
+            if (!text) {
+                showStatus('Lütfen bir metin girin.', 'error');
+                return;
+            }
+
+            // Disable button, show loading
+            btn.disabled = true;
+            btnText.textContent = 'Oluşturuluyor...';
+            spinner.style.display = 'block';
+            audioContainer.classList.remove('show');
+            showStatus('ElevenLabs API\'ye istek gönderiliyor...', 'loading');
+
+            try {
+                const response = await fetch('/api/v2/tts', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text: text })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showStatus('Hata: ' + data.error, 'error');
+                    return;
+                }
+
+                // Convert base64 to audio blob
+                const audioBlob = base64ToBlob(data.audio, 'audio/mpeg');
+                const audioUrl = URL.createObjectURL(audioBlob);
+
+                // Set audio source and play
+                audioPlayer.src = audioUrl;
+                audioContainer.classList.add('show');
+
+                const sizeKB = (data.size_bytes / 1024).toFixed(1);
+                showStatus(`Ses oluşturuldu! (${sizeKB} KB)`, 'success');
+
+                // Auto-play
+                audioPlayer.play();
+
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus('Bağlantı hatası: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = 'Seslendir';
+                spinner.style.display = 'none';
+            }
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status show ' + type;
+        }
+
+        function base64ToBlob(base64, mimeType) {
+            const byteCharacters = atob(base64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            return new Blob([byteArray], { type: mimeType });
+        }
+
+        // Enter key to submit
+        document.getElementById('text').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                generateSpeech();
+            }
+        });
+
+        // ============================================
+        // Background Music Functions
+        // ============================================
+        const bgMusic = document.getElementById('bgMusic');
+        const bgMusicBtn = document.getElementById('bgMusicBtn');
+        let bgMusicPlaying = false;
+        let originalVolume = 0.1;
+
+        // Initialize background music
+        bgMusic.volume = originalVolume;
+
+        function toggleBgMusic() {
+            if (bgMusicPlaying) {
+                bgMusic.pause();
+                bgMusicBtn.classList.add('muted');
+            } else {
+                bgMusic.play().catch(e => console.log('Autoplay blocked:', e));
+                bgMusicBtn.classList.remove('muted');
+            }
+            bgMusicPlaying = !bgMusicPlaying;
+        }
+
+        function setBgVolume(value) {
+            originalVolume = value / 100;
+            bgMusic.volume = originalVolume;
+        }
+
+        // Duck background music when TTS plays
+        function duckBgMusic() {
+            if (bgMusicPlaying) {
+                bgMusic.volume = originalVolume * 0.2; // Reduce to 20%
+            }
+        }
+
+        // Restore background music after TTS
+        function restoreBgMusic() {
+            if (bgMusicPlaying) {
+                bgMusic.volume = originalVolume;
+            }
+        }
+
+        // Auto-start background music on first user interaction
+        document.body.addEventListener('click', function initBgMusic() {
+            if (!bgMusicPlaying) {
+                bgMusic.play().then(() => {
+                    bgMusicPlaying = true;
+                    bgMusicBtn.classList.remove('muted');
+                }).catch(e => console.log('Autoplay blocked:', e));
+            }
+            document.body.removeEventListener('click', initBgMusic);
+        }, { once: true });
+
+        // Hook into audio player events
+        const audioPlayer = document.getElementById('audioPlayer');
+        audioPlayer.addEventListener('play', duckBgMusic);
+        audioPlayer.addEventListener('ended', restoreBgMusic);
+        audioPlayer.addEventListener('pause', restoreBgMusic);
+    </script>
+</body>
+
+</html>

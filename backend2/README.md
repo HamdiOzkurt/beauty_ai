@@ -8,7 +8,8 @@ Modern, LangGraph tabanlı AI Asistan backend'i.
 - **Google Gemini 2.0**: Güçlü dil modeli
 - **Directus CMS**: Tüm veri yönetimi (NO local PostgreSQL)
 - **WebSocket**: Gerçek zamanlı iletişim
-- **STT/TTS**: Google Cloud ses servisleri
+- **STT**: Google Cloud Speech-to-Text
+- **TTS**: ElevenLabs (eleven_multilingual_v2 - Türkçe destekli)
 
 ## 🏗️ Mimari
 
@@ -47,7 +48,10 @@ Gerekli değerleri doldur:
 - `GEMINI_API_KEY`: Google Gemini API key
 - `DIRECTUS_URL`: Directus CMS URL
 - `DIRECTUS_TOKEN`: Directus access token
-- `GOOGLE_APPLICATION_CREDENTIALS`: Google Cloud service account JSON path
+- `GOOGLE_APPLICATION_CREDENTIALS`: Google Cloud service account JSON path (STT için)
+- `ELEVENLABS_API_KEY`: ElevenLabs API key (TTS için)
+- `ELEVENLABS_VOICE_ID`: (Opsiyonel) Ses ID'si (varsayılan: Rachel)
+- `ELEVENLABS_MODEL`: (Opsiyonel) Model (varsayılan: eleven_multilingual_v2)
 
 ### 3. Directus Bağlantısını Test Et
 
@@ -199,4 +203,4 @@ Proprietary - Beauty AI Project
 
 - Backend Development: AI Staff Engineer
 - Architecture: LangGraph + LangChain
-- Voice Services: Google Cloud STT/TTS
+- Voice Services: Google Cloud STT + ElevenLabs TTS

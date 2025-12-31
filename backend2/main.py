@@ -34,8 +34,8 @@ elif settings.GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(settings.GOOGLE_
 else:
     logging.warning("⚠️ Google Cloud credentials file not found!")
 
-# Google Cloud imports (STT/TTS) - AFTER setting credentials
-from google.cloud import speech, texttospeech
+# Google Cloud imports (STT only) - AFTER setting credentials
+from google.cloud import speech
 from google.api_core.exceptions import DeadlineExceeded
 import time
 
@@ -286,37 +286,48 @@ class GoogleSTTService:
 
 
 class TTSService:
-    """Google Cloud Text-to-Speech service"""
+    """ElevenLabs Text-to-Speech service"""
 
     def __init__(self):
         try:
-            self.client = texttospeech.TextToSpeechClient()
-            self.voice = texttospeech.VoiceSelectionParams(
-                language_code="tr-TR",
-                name="tr-TR-Chirp3-HD-Leda",
-                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-            )
-            self.audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3,
-                speaking_rate=1.0,  # Chirp3 için ideal hız
-                sample_rate_hertz=24000  # HD model için 24kHz
-            )
-            logger.info("✅ Google TTS initialized (Chirp3-HD-Leda)")
+            if not settings.ELEVENLABS_API_KEY:
+                raise ValueError("ELEVENLABS_API_KEY is not configured")
+
+            from elevenlabs.client import ElevenLabs
+
+            self.client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
+            self.voice_id = settings.ELEVENLABS_VOICE_ID
+            self.model = settings.ELEVENLABS_MODEL
+
+            logger.info(f"✅ ElevenLabs TTS initialized (voice: {self.voice_id}, model: {self.model})")
         except Exception as e:
             logger.error(f"❌ TTS initialization failed: {e}")
             raise
 
     def text_to_speech(self, text: str) -> bytes:
-        """Convert text to speech"""
+        """Convert text to speech using ElevenLabs"""
         try:
-            synthesis_input = texttospeech.SynthesisInput(text=text)
-            response = self.client.synthesize_speech(
-                input=synthesis_input,
-                voice=self.voice,
-                audio_config=self.audio_config
+            from elevenlabs import VoiceSettings
+
+            # Generate audio using ElevenLabs
+            audio_generator = self.client.text_to_speech.convert(
+                text=text,
+                voice_id=self.voice_id,
+                model_id=self.model,
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True,
+                    speed=0.95 # Daha yavaş konuşma (0.5-2.0, 1.0 normal)
+                )
             )
-            logger.info(f"🔊 TTS: Generated {len(response.audio_content)} bytes")
-            return response.audio_content
+
+            # Convert generator to bytes
+            audio_bytes = b"".join(audio_generator)
+
+            logger.info(f"🔊 TTS (ElevenLabs): Generated {len(audio_bytes)} bytes")
+            return audio_bytes
         except Exception as e:
             logger.error(f"TTS error: {e}", exc_info=True)
             return b""
@@ -970,6 +981,60 @@ async def chat_endpoint(request: dict):
         "session_id": session_id,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.post("/api/v2/tts")
+async def tts_endpoint(request: dict):
+    """
+    TTS Test endpoint - Convert text to speech
+
+    Request:
+    {
+        "text": "Merhaba, nasılsınız?"
+    }
+
+    Response:
+    {
+        "audio": "base64_encoded_mp3",
+        "text": "original text"
+    }
+    """
+    import base64
+
+    text = request.get("text", "")
+
+    if not text:
+        return {"error": "Text is required"}
+
+    tts = get_tts_service()
+    if not tts:
+        return {"error": "TTS service is not available. Check ELEVENLABS_API_KEY."}
+
+    try:
+        audio_bytes = tts.text_to_speech(text)
+        if not audio_bytes:
+            return {"error": "TTS failed to generate audio"}
+
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+        return {
+            "audio": audio_base64,
+            "text": text,
+            "size_bytes": len(audio_bytes),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"TTS endpoint error: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@app.get("/test/tts")
+async def serve_tts_test():
+    """Serve TTS test page"""
+    tts_test_path = os.path.join(os.path.dirname(__file__), "templates", "tts_test.html")
+    if os.path.exists(tts_test_path):
+        return FileResponse(tts_test_path)
+    return {"error": "TTS test page not found"}
 
 
 # ============================================================================

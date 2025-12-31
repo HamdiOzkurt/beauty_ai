@@ -1,11 +1,58 @@
-// DOM Elements - v4.0 GOOGLE CLOUD VAD - CONTINUOUS LISTENING
+// DOM Elements - v4.1 GOOGLE CLOUD VAD - CONTINUOUS LISTENING + AMBIENT MUSIC
 const statusBadge = document.getElementById('statusBadge');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const voiceButton = document.getElementById('voiceButton');
 const messagesDiv = document.getElementById('messages');
 
-console.log('✅ main.js v4.0 loaded - Google Cloud VAD, Continuous Listening, Auto Voice Detection');
+// Background Music Elements
+const bgMusic = document.getElementById('bgMusic');
+const bgMusicBtn = document.getElementById('bgMusicBtn');
+
+console.log('✅ main.js v4.1 loaded - Google Cloud VAD, Continuous Listening, Ambient Music');
+
+// ============================================================================
+// Background Music State
+// ============================================================================
+let bgMusicPlaying = false;
+let originalVolume = 0.04; // 4% default volume
+
+// Initialize background music volume
+if (bgMusic) {
+    bgMusic.volume = originalVolume;
+}
+
+function toggleBgMusic() {
+    if (!bgMusic) return;
+
+    if (bgMusicPlaying) {
+        bgMusic.pause();
+        if (bgMusicBtn) bgMusicBtn.classList.add('muted');
+    } else {
+        bgMusic.play().catch(e => console.log('Autoplay blocked:', e));
+        if (bgMusicBtn) bgMusicBtn.classList.remove('muted');
+    }
+    bgMusicPlaying = !bgMusicPlaying;
+}
+
+function setBgVolume(value) {
+    originalVolume = value / 100;
+    if (bgMusic) bgMusic.volume = originalVolume;
+}
+
+// Duck background music when TTS plays
+function duckBgMusic() {
+    if (bgMusicPlaying && bgMusic) {
+        bgMusic.volume = originalVolume * 0.15; // Reduce to 15%
+    }
+}
+
+// Restore background music after TTS
+function restoreBgMusic() {
+    if (bgMusicPlaying && bgMusic) {
+        bgMusic.volume = originalVolume;
+    }
+}
 
 // ============================================================================
 // State Machine
@@ -413,9 +460,15 @@ function playBase64Audio(base64Audio, onEnded) {
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
 
+        // Duck background music when TTS starts
+        duckBgMusic();
+
         audio.onended = () => {
             URL.revokeObjectURL(audioUrl);
             console.log('🔊 TTS audio bitti');
+
+            // Restore background music
+            restoreBgMusic();
 
             // Callback çağır (state'i LISTENING'e döndürmek için)
             if (onEnded) {
@@ -428,6 +481,9 @@ function playBase64Audio(base64Audio, onEnded) {
 
     } catch (error) {
         console.error('Audio çalma hatası:', error);
+
+        // Restore background music on error
+        restoreBgMusic();
 
         // Hata olsa bile callback çağır
         if (onEnded) {
@@ -464,3 +520,17 @@ async function playGoogleTTS(text) {
         console.error('TTS çalma hatası:', error);
     }
 }
+
+// ============================================================================
+// Auto-start Background Music on First User Interaction
+// ============================================================================
+document.body.addEventListener('click', function initBgMusic() {
+    if (!bgMusicPlaying && bgMusic) {
+        bgMusic.play().then(() => {
+            bgMusicPlaying = true;
+            if (bgMusicBtn) bgMusicBtn.classList.remove('muted');
+            console.log('🎵 Background music started');
+        }).catch(e => console.log('Autoplay blocked:', e));
+    }
+    document.body.removeEventListener('click', initBgMusic);
+}, { once: true });

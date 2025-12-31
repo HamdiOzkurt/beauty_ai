@@ -1,6 +1,6 @@
 Takvimi kontrol ediyorum dönüş sağlayacağım ekranlarımı kontrol ediyorum tarzı konuşma ekleyelim
 ARKAYA SES KOYUCAZ BERBERLERDE OLAN SES TARZI 
-Sizin sesinizden bir ton alıp yapay zeka ile geri dönüş sağlama
+Sizin sesinizden bir ton alıp yapay zeka ile geri dönüş sağlama.
 Kişiselleştirebilme üzerine düşünelim 
 Cinsiyete göre konuşma biçimi 
 Google Takvim entegresi csm için

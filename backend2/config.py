@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
     DIRECTUS_TOKEN: str
 
+    # ElevenLabs TTS Settings (loaded via os.getenv)
+    ELEVENLABS_API_KEY: Optional[str] = None
+    ELEVENLABS_VOICE_ID: str = "IuRRIAcbQK5AQk1XevPj"  # Rachel voice (default) doa IuRRIAcbQK5AQk1XevPj  adeline Z3R5wn05IrDiVCyEkUrK
+    ELEVENLABS_MODEL: str = "eleven_multilingual_v2"  # Best for Turkish
+
     # Directus CMS (All data managed through Directus)
     DIRECTUS_URL: str = "https://cms.demirtech.com"
     TENANT_ID: int = 1
@@ -60,3 +65,7 @@ settings = Settings()
 # This ensures the Google Cloud client can find the credentials
 if settings.GOOGLE_APPLICATION_CREDENTIALS:
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = settings.GOOGLE_APPLICATION_CREDENTIALS
+
+# Load ELEVENLABS_API_KEY from environment if not set in .env
+if not settings.ELEVENLABS_API_KEY:
+    settings.ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
